@@ -1,0 +1,15 @@
+[Unit]
+Description=Dockward - Docker deploy guard
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/dockward -config /etc/dockward/config.json
+Restart=always
+RestartSec=10
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

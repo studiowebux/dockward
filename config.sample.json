@@ -1,0 +1,53 @@
+{
+  "registry": {
+    "url": "http://localhost:5000",
+    "poll_interval": 300
+  },
+  "notifications": {
+    "discord": {
+      "webhook_url": "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"
+    },
+    "smtp": {
+      "host": "smtp.example.com",
+      "port": 587,
+      "from": "alerts@webux.dev",
+      "to": "tommy@studiowebux.com",
+      "username": "",
+      "password": ""
+    },
+    "webhooks": [
+      {
+        "name": "github-deploy-pipeline",
+        "url": "https://api.github.com/repos/studiowebux/infrastructure/actions/workflows/deploy.yml/dispatches",
+        "method": "POST",
+        "headers": {
+          "Authorization": "Bearer $GH_TOKEN",
+          "Accept": "application/vnd.github.v3+json"
+        },
+        "body": "{\"ref\":\"main\",\"inputs\":{\"service\":\"{{ .Service }}\",\"event\":\"{{ .Event }}\"}}"
+      }
+    ]
+  },
+  "services": [
+    {
+      "name": "minimaldoc",
+      "image": "minimaldoc:latest",
+      "compose_file": "/srv/minimaldoc.com/minimaldoc-landing-main/docker-compose.yml",
+      "compose_project": "minimaldoc",
+      "auto_update": true,
+      "auto_heal": true,
+      "health_grace": 60,
+      "heal_cooldown": 300
+    },
+    {
+      "name": "proxy",
+      "image": "",
+      "compose_file": "/srv/proxy/proxy-main/docker-compose.yml",
+      "compose_project": "proxy",
+      "auto_update": false,
+      "auto_heal": true,
+      "health_grace": 60,
+      "heal_cooldown": 300
+    }
+  ]
+}

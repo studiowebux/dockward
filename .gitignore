@@ -1,0 +1,22 @@
+# Binaries (root only)
+/dockward
+/dockward-linux-amd64
+/dockward-darwin-arm64
+
+# Config (contains secrets)
+config.json
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

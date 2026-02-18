@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go vet ./...
+
+      - run: go test ./...
+
+      - name: Build linux/amd64
+        run: GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dockward-linux-amd64 ./cmd/dockward/
+
+      - name: Build darwin/arm64
+        run: GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dockward-darwin-arm64 ./cmd/dockward/
+
+      - name: Create GitHub Release
+        run: gh release create ${{ github.ref_name }} dockward-linux-amd64 dockward-darwin-arm64 --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
