@@ -1,6 +1,6 @@
 # Dockward
 
-Docker deploy guard: polls a local registry for image changes, auto-deploys via docker compose with rollback on failure, blocks bad digests to prevent infinite loops, and auto-heals unhealthy containers.
+Docker deploy guard: polls a local registry for image changes, auto-deploys via docker compose with rollback on failure, blocks bad digests, and auto-heals unhealthy containers.
 
 Bug tracker: https://github.com/studiowebux/dockward/issues
 Discord: https://discord.gg/BG5Erm9fNv
@@ -11,74 +11,92 @@ Funding: [Buy Me a Coffee](https://buymeacoffee.com/studiowebux) | [GitHub Spons
 
 Single static Go binary (~12 MB), zero external dependencies. Talks to the Docker daemon and a local registry via their HTTP APIs (unix socket and REST).
 
+Two operational modes:
+
+1. **Full mode**: registry polling + auto-deploy with rollback + auto-heal. Requires a local Docker registry and docker compose.
+2. **Heal-only mode**: healthcheck monitoring + auto-restart. Works with any container (compose-managed or standalone `docker run`). No registry or compose files needed.
+
 Features:
 
 - Registry polling: compares remote vs local image digests, pulls and redeploys on change
 - Rollback: tags current image as `:rollback` before deploy, reverts if container is unhealthy or not running after grace period. Blocks the bad digest to prevent infinite rollback loops.
 - Atomic deploys: concurrent deploy guard prevents poll/API race conditions
-- Label-based matching: uses `com.docker.compose.project` labels for container identification (no substring ambiguity)
+- Container matching: `com.docker.compose.project` label for compose containers, `container_name` for standalone containers
 - Health polling: polls container health every 5s during grace period (fail fast on unhealthy, keep waiting on starting)
-- Auto-heal: listens for Docker health events, restarts unhealthy containers with cooldown protection
+- Auto-heal: listens for Docker health events, restarts unhealthy containers with cooldown and max retry protection
 - Notifications: Discord webhook, SMTP email, custom webhooks with Go `text/template` body
 - Prometheus metrics: `/metrics` endpoint with update/rollback/restart/failure/blocked counters per service
 - Trigger API: `POST /trigger` and `POST /trigger/<service>` for manual deploys
 - Blocked digest API: `GET /blocked` and `DELETE /blocked/<service>` for managing blocked digests
 - Systemd integration: runs as a system service, logs to journal
 
-## Architecture
-
-```
-dockward/
-  cmd/dockward/main.go          Entry point, signal handling, component wiring
-  internal/
-    config/config.go            JSON config loader with defaults and validation
-    docker/
-      client.go                 Unix socket HTTP client for Docker daemon
-      containers.go             List, inspect, restart, label-based lookup
-      images.go                 Inspect, tag, remove images
-      events.go                 Real-time Docker event stream (SSE)
-    registry/registry.go        Registry v2 API (digest comparison)
-    compose/compose.go          docker compose pull/up via exec (with -p project)
-    notify/
-      notify.go                 Dispatcher + Alert types
-      discord.go                Discord webhook sender
-      smtp.go                   SMTP email sender
-      webhook.go                Custom webhook with template rendering
-    watcher/
-      updater.go                Poll loop, digest comparison, deploy, rollback, blocked digests
-      healer.go                 Docker event listener, restart, cooldown
-      metrics.go                Prometheus counters and gauges
-      api.go                    HTTP API (trigger, health, metrics, blocked)
-```
-
 ## Installation
 
 Build from source (requires Go 1.24+):
 
 ```sh
+git clone https://github.com/studiowebux/dockward.git
+cd dockward
 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=$(git describe --tags --always)" -o dockward-linux-amd64 ./cmd/dockward/
 ```
 
-Deploy via Ansible:
+Install on the target host:
 
 ```sh
-ansible-playbook -l production playbooks/dockward.yml
+sudo cp dockward-linux-amd64 /usr/local/bin/dockward
+sudo chmod +x /usr/local/bin/dockward
+sudo mkdir -p /etc/dockward
+sudo cp config.sample.json /etc/dockward/config.json
+sudo cp dockward.service /etc/systemd/system/dockward.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now dockward
 ```
 
-The playbook copies the binary to `/usr/local/bin/dockward`, the config to `/etc/dockward/config.json`, and installs a systemd unit.
+Verify:
 
-## Configuration
+```sh
+dockward -version
+systemctl status dockward
+journalctl -u dockward -f
+```
 
-Copy `config.sample.json` to `config.json` and edit:
+## Usage
+
+```sh
+dockward -config /etc/dockward/config.json
+```
+
+## Getting Started
+
+### Heal-only mode (standalone container)
+
+Monitor a standalone container by name and auto-restart on unhealthy:
+
+```json
+{
+  "services": [
+    {
+      "name": "my-api",
+      "container_name": "my-api",
+      "auto_heal": true,
+      "heal_cooldown": 120,
+      "heal_max_restarts": 5
+    }
+  ]
+}
+```
+
+No registry, compose file, or compose project required. Dockward matches Docker events by container name and restarts the container when it becomes unhealthy. After 5 consecutive failed restarts, it stops retrying and sends a critical notification.
+
+### Full mode (registry + compose)
+
+Poll a local registry for image updates, auto-deploy, and auto-heal:
 
 ```json
 {
   "registry": {
     "url": "http://localhost:5000",
     "poll_interval": 300
-  },
-  "api": {
-    "port": "9090"
   },
   "notifications": {
     "discord": {
@@ -89,7 +107,7 @@ Copy `config.sample.json` to `config.json` and edit:
     {
       "name": "myapp",
       "image": "myapp:latest",
-      "compose_file": "/srv/myapp.com/docker-compose.yml",
+      "compose_file": "/srv/myapp/docker-compose.yml",
       "compose_project": "myapp",
       "auto_update": true,
       "auto_heal": true,
@@ -100,6 +118,8 @@ Copy `config.sample.json` to `config.json` and edit:
 }
 ```
 
+## Configuration
+
 | Field | Description | Default |
 |-------|-------------|---------|
 | `registry.url` | Local registry address | `http://localhost:5000` |
@@ -107,12 +127,16 @@ Copy `config.sample.json` to `config.json` and edit:
 | `api.port` | API listen port (localhost only) | `9090` |
 | `services[].name` | Service identifier | required |
 | `services[].image` | Registry image reference | required if `auto_update` |
-| `services[].compose_file` | Absolute path to docker-compose.yml | required |
-| `services[].compose_project` | Docker Compose project name (used for `-p` flag and label matching) | required |
+| `services[].compose_file` | Absolute path to docker-compose.yml | required if `auto_update` |
+| `services[].compose_project` | Docker Compose project name | required if `auto_update` |
+| `services[].container_name` | Container name for event matching (standalone containers) | optional |
 | `services[].auto_update` | Enable registry polling for this service | `false` |
 | `services[].auto_heal` | Enable auto-restart on unhealthy | `false` |
 | `services[].health_grace` | Seconds to wait after deploy before health check | `60` |
 | `services[].heal_cooldown` | Minimum seconds between auto-restarts | `300` |
+| `services[].heal_max_restarts` | Max consecutive failed restarts before giving up | `3` |
+
+When `auto_heal` is true, at least one of `compose_project` or `container_name` is required for event matching.
 
 ### Notifications
 
@@ -149,35 +173,9 @@ Exposed at `/metrics` in Prometheus text exposition format:
 - `watcher_last_poll_timestamp_seconds` - unix timestamp of last poll
 - `watcher_uptime_seconds` - seconds since start
 
-## Event Flow
+## Contributions
 
-Update cycle:
-1. Poll registry for each service with `auto_update: true`
-2. Skip if digest is blocked (previous rollback) or deploy is in progress
-3. Compare remote digest with local digest
-4. If changed: tag current as `:rollback`, `docker compose -p <project> pull`, `docker compose -p <project> up -d`
-5. Poll container health every 5s until `health_grace` deadline
-6. If healthy: success. If unhealthy: rollback immediately (fail fast). If still starting at deadline: rollback.
-7. On rollback: block the bad digest, retag `:rollback` as `:latest`, redeploy
-8. Blocked digest auto-clears when a new digest appears in the registry (fix pushed). Manual unblock via `DELETE /blocked/<name>`.
-
-Heal cycle:
-1. Listen for Docker `health_status` and `die` events
-2. Match events to services via `com.docker.compose.project` label
-3. On unhealthy: check cooldown, restart container if `auto_heal` is true
-4. Verify health 30 seconds after restart
-5. If still unhealthy: send critical notification
-6. On die (outside deploy): send critical notification
-
-## Systemd
-
-Dockward runs as `/etc/systemd/system/dockward.service`:
-
-```sh
-systemctl start dockward
-systemctl status dockward
-journalctl -u dockward -f
-```
+https://github.com/studiowebux/dockward
 
 ## License
 
