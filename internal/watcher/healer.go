@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -28,18 +29,24 @@ type Healer struct {
 	// Keyed by service name. Cleared when a healthy event is received.
 	degraded   map[string]bool
 	degradedMu sync.Mutex
+
+	// restartCounts tracks consecutive failed restart attempts per service.
+	// Keyed by service name. Reset when a healthy event is received.
+	restartCounts   map[string]int
+	restartCountsMu sync.Mutex
 }
 
 // NewHealer creates a health monitor.
 func NewHealer(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatcher, updater *Updater, metrics *Metrics) *Healer {
 	return &Healer{
-		cfg:        cfg,
-		docker:     dc,
-		dispatcher: dispatcher,
-		updater:    updater,
-		metrics:    metrics,
-		cooldowns:  make(map[string]time.Time),
-		degraded:   make(map[string]bool),
+		cfg:           cfg,
+		docker:        dc,
+		dispatcher:    dispatcher,
+		updater:       updater,
+		metrics:       metrics,
+		cooldowns:     make(map[string]time.Time),
+		degraded:      make(map[string]bool),
+		restartCounts: make(map[string]int),
 	}
 }
 
@@ -102,6 +109,15 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 		return
 	}
 
+	// Check if max consecutive restarts exceeded.
+	h.restartCountsMu.Lock()
+	count := h.restartCounts[svc.Name]
+	h.restartCountsMu.Unlock()
+	if count >= svc.HealMaxRestarts {
+		log.Printf("[healer] %s: max restarts (%d) reached, giving up", svc.Name, svc.HealMaxRestarts)
+		return
+	}
+
 	// Check cooldown.
 	if h.inCooldown(containerName) {
 		log.Printf("[healer] %s: in cooldown, skipping restart", svc.Name)
@@ -150,14 +166,33 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 	if info.State.Health != nil && info.State.Health.Status == "unhealthy" {
 		log.Printf("[healer] %s: still unhealthy after restart", svc.Name)
 		h.metrics.IncFailures(svc.Name)
-		h.dispatcher.Send(ctx, notify.Alert{
-			Service:   svc.Name,
-			Event:     "critical",
-			Message:   "Container still unhealthy after restart. Manual intervention required.",
-			Reason:    info.LastHealthOutput(),
-			Container: containerName,
-			Level:     notify.LevelCritical,
-		})
+
+		// Increment consecutive failure counter.
+		h.restartCountsMu.Lock()
+		h.restartCounts[svc.Name]++
+		count := h.restartCounts[svc.Name]
+		h.restartCountsMu.Unlock()
+
+		if count >= svc.HealMaxRestarts {
+			log.Printf("[healer] %s: giving up after %d consecutive failed restarts", svc.Name, count)
+			h.dispatcher.Send(ctx, notify.Alert{
+				Service:   svc.Name,
+				Event:     "critical",
+				Message:   fmt.Sprintf("Giving up after %d consecutive failed restarts. Manual intervention required.", count),
+				Reason:    info.LastHealthOutput(),
+				Container: containerName,
+				Level:     notify.LevelCritical,
+			})
+		} else {
+			h.dispatcher.Send(ctx, notify.Alert{
+				Service:   svc.Name,
+				Event:     "critical",
+				Message:   fmt.Sprintf("Container still unhealthy after restart (attempt %d/%d).", count, svc.HealMaxRestarts),
+				Reason:    info.LastHealthOutput(),
+				Container: containerName,
+				Level:     notify.LevelCritical,
+			})
+		}
 		return
 	}
 
@@ -188,6 +223,11 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 	log.Printf("[healer] %s: recovered (healthy)", svc.Name)
 	h.metrics.SetHealthy(svc.Name, true)
 	h.setDegraded(svc.Name, false)
+
+	// Reset consecutive restart failure counter.
+	h.restartCountsMu.Lock()
+	delete(h.restartCounts, svc.Name)
+	h.restartCountsMu.Unlock()
 	h.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
 		Event:     "healthy",
@@ -216,15 +256,17 @@ func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerN
 }
 
 // findServiceByEvent matches a Docker event to a configured service
-// using the com.docker.compose.project label from event attributes.
+// using the com.docker.compose.project label or container name from event attributes.
 func (h *Healer) findServiceByEvent(event docker.Event) *config.Service {
 	project := event.Actor.Attributes["com.docker.compose.project"]
-	if project == "" {
-		return nil
-	}
+	name := event.Actor.Attributes["name"]
 	for i := range h.cfg.Services {
-		if h.cfg.Services[i].ComposeProject == project {
-			return &h.cfg.Services[i]
+		svc := &h.cfg.Services[i]
+		if project != "" && svc.ComposeProject == project {
+			return svc
+		}
+		if name != "" && svc.ContainerName == name {
+			return svc
 		}
 	}
 	return nil

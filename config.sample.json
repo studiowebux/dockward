@@ -48,6 +48,13 @@
       "auto_heal": true,
       "health_grace": 60,
       "heal_cooldown": 300
+    },
+    {
+      "name": "standalone-api",
+      "container_name": "standalone-api",
+      "auto_heal": true,
+      "heal_cooldown": 120,
+      "heal_max_restarts": 5
     }
   ]
 }

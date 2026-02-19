@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-19
+
+### Added
+- Heal-only mode: monitor and auto-restart containers by name without compose or registry
+- `container_name` service config field for matching standalone containers
+- `heal_max_restarts` config field (default 3) to cap consecutive failed restart attempts
+- Healer sends "gave up" notification after max restarts exceeded, resets on healthy recovery
+
+### Changed
+- `compose_file` and `compose_project` only required when `auto_update` is true
+- `findServiceByEvent` matches both compose project label and container name
+
+### Fixed
+- Healer restart loop: previously restarted unhealthy containers indefinitely after each cooldown expiry
+
 ## [0.1.0] - 2026-02-17
 
 ### Added
@@ -29,5 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd service unit
 - Version flag (`-version`) with build-time injection via ldflags
 
-[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/studiowebux/dockward/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/studiowebux/dockward/releases/tag/v0.1.0

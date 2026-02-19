@@ -64,10 +64,12 @@ type Service struct {
 	Image          string `json:"image"`
 	ComposeFile    string `json:"compose_file"`
 	ComposeProject string `json:"compose_project"`
+	ContainerName  string `json:"container_name,omitempty"`
 	AutoUpdate     bool   `json:"auto_update"`
 	AutoHeal       bool   `json:"auto_heal"`
-	HealthGrace    int    `json:"health_grace"`  // seconds, default 60
-	HealCooldown   int    `json:"heal_cooldown"` // seconds, default 300
+	HealthGrace    int    `json:"health_grace"`    // seconds, default 60
+	HealCooldown   int    `json:"heal_cooldown"`   // seconds, default 300
+	HealMaxRestarts int   `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3
 }
 
 // Load reads and parses a JSON config file.
@@ -115,6 +117,9 @@ func (c *Config) setDefaults() {
 		if c.Services[i].HealCooldown <= 0 {
 			c.Services[i].HealCooldown = 300
 		}
+		if c.Services[i].HealMaxRestarts <= 0 {
+			c.Services[i].HealMaxRestarts = 3
+		}
 	}
 }
 
@@ -123,14 +128,19 @@ func (c *Config) validate() error {
 		if svc.Name == "" {
 			return fmt.Errorf("service[%d]: name is required", i)
 		}
-		if svc.AutoUpdate && svc.Image == "" {
-			return fmt.Errorf("service[%d] %q: image is required when auto_update is true", i, svc.Name)
+		if svc.AutoUpdate {
+			if svc.Image == "" {
+				return fmt.Errorf("service[%d] %q: image is required when auto_update is true", i, svc.Name)
+			}
+			if svc.ComposeFile == "" {
+				return fmt.Errorf("service[%d] %q: compose_file is required when auto_update is true", i, svc.Name)
+			}
+			if svc.ComposeProject == "" {
+				return fmt.Errorf("service[%d] %q: compose_project is required when auto_update is true", i, svc.Name)
+			}
 		}
-		if svc.ComposeFile == "" {
-			return fmt.Errorf("service[%d] %q: compose_file is required", i, svc.Name)
-		}
-		if svc.ComposeProject == "" {
-			return fmt.Errorf("service[%d] %q: compose_project is required", i, svc.Name)
+		if svc.AutoHeal && svc.ComposeProject == "" && svc.ContainerName == "" {
+			return fmt.Errorf("service[%d] %q: compose_project or container_name is required when auto_heal is true", i, svc.Name)
 		}
 	}
 	return nil
