@@ -209,6 +209,12 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 }
 
 func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, containerName string) {
+	// Skip if in deploy grace period (updater sends its own success notification).
+	if h.updater.IsDeploying(svc.Name) {
+		log.Printf("[healer] %s: healthy during deploy, skipping (updater handles notification)", svc.Name)
+		return
+	}
+
 	// Check if the service was in a degraded state (died, unhealthy, or healer-restarted).
 	h.cooldownsMu.Lock()
 	_, wasCooling := h.cooldowns[containerName]

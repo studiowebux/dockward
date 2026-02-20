@@ -34,6 +34,13 @@ type Updater struct {
 	// Memory-only: cleared on watcher restart.
 	blocked   map[string]string
 	blockedMu sync.RWMutex
+
+	// notFound maps service name -> remote digest at time of failure.
+	// Suppresses repeated deploy attempts when the local image cannot be
+	// resolved (e.g. compose file image field mismatch). Cleared when the
+	// remote digest changes, allowing a retry.
+	notFound   map[string]string
+	notFoundMu sync.RWMutex
 }
 
 // NewUpdater creates an image updater.
@@ -46,6 +53,7 @@ func NewUpdater(cfg *config.Config, dc *docker.Client, rc *registry.Client, disp
 		metrics:    metrics,
 		deploying:  make(map[string]time.Time),
 		blocked:    make(map[string]string),
+		notFound:   make(map[string]string),
 	}
 }
 
@@ -136,21 +144,38 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 		u.metrics.SetBlocked(svc.Name, false)
 	}
 
-	// Step 2: Get local digest from Docker.
-	registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(svc.Image)
-	fullImage := registryPrefix + ":" + imageTag(svc.Image)
-
-	localImg, err := u.docker.InspectImage(ctx, fullImage)
-	if err != nil {
-		// Image not pulled yet locally, treat as needing update.
-		log.Printf("[updater] %s: local image not found, pulling", svc.Name)
-		return u.deploy(ctx, svc, "", remoteDigest)
+	// Check if this service is in the notFound suppression map.
+	u.notFoundMu.RLock()
+	notFoundDigest := u.notFound[svc.Name]
+	u.notFoundMu.RUnlock()
+	if notFoundDigest != "" {
+		if notFoundDigest == remoteDigest {
+			return nil // Same unresolvable digest, skip silently.
+		}
+		// Remote digest changed, clear suppression and retry.
+		log.Printf("[updater] %s: registry digest changed since not-found suppression, retrying", svc.Name)
+		u.notFoundMu.Lock()
+		delete(u.notFound, svc.Name)
+		u.notFoundMu.Unlock()
 	}
 
-	localDigest := localImg.LocalDigest(registryPrefix)
+	// Step 2: Get local digest from Docker.
+	registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(svc.Image)
+
+	localDigest := u.resolveLocalDigest(ctx, svc, registryPrefix)
 	if localDigest == "" {
-		log.Printf("[updater] %s: no local digest found, pulling", svc.Name)
-		return u.deploy(ctx, svc, "", remoteDigest)
+		// Suppress future polls until the registry digest changes.
+		log.Printf("[updater] %s: no local digest resolved, suppressing until registry digest changes", svc.Name)
+		u.notFoundMu.Lock()
+		u.notFound[svc.Name] = remoteDigest
+		u.notFoundMu.Unlock()
+		u.dispatcher.Send(ctx, notify.Alert{
+			Service: svc.Name,
+			Event:   "not_found",
+			Message: "Image not found locally. Verify compose file image field matches registry. Suppressing until registry digest changes.",
+			Level:   notify.LevelWarning,
+		})
+		return nil
 	}
 
 	// Step 3: Compare.
@@ -160,6 +185,53 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 
 	log.Printf("[updater] %s: digest changed %s -> %s", svc.Name, shortDigest(localDigest), shortDigest(remoteDigest))
 	return u.deploy(ctx, svc, localDigest, remoteDigest)
+}
+
+// resolveLocalDigest tries two strategies to find the local image digest:
+//  1. Inspect image by constructed reference (registryHost/name:tag).
+//  2. Fallback: find the running container by compose project label, get its
+//     image ID, inspect by ID, and extract digest from RepoDigests.
+func (u *Updater) resolveLocalDigest(ctx context.Context, svc config.Service, registryPrefix string) string {
+	fullImage := registryPrefix + ":" + imageTag(svc.Image)
+
+	// Strategy 1: direct image inspect by reference.
+	localImg, err := u.docker.InspectImage(ctx, fullImage)
+	if err == nil {
+		if d := localImg.LocalDigest(registryPrefix); d != "" {
+			return d
+		}
+		log.Printf("[updater] %s: image found by reference but no matching digest in RepoDigests", svc.Name)
+	} else {
+		log.Printf("[updater] %s: inspect image %s failed: %v", svc.Name, fullImage, err)
+	}
+
+	// Strategy 2: resolve via running container's image ID.
+	containerID := u.findContainerByProject(ctx, svc.ComposeProject)
+	if containerID == "" {
+		log.Printf("[updater] %s: no running container for fallback digest resolution", svc.Name)
+		return ""
+	}
+
+	info, err := u.docker.InspectContainer(ctx, containerID)
+	if err != nil {
+		log.Printf("[updater] %s: container inspect failed during fallback: %v", svc.Name, err)
+		return ""
+	}
+
+	// ContainerInspect.Image is the image ID (sha256:...).
+	imgByID, err := u.docker.InspectImage(ctx, info.Image)
+	if err != nil {
+		log.Printf("[updater] %s: inspect image by ID %s failed: %v", svc.Name, info.Image, err)
+		return ""
+	}
+
+	if d := imgByID.LocalDigest(registryPrefix); d != "" {
+		log.Printf("[updater] %s: resolved digest via container fallback", svc.Name)
+		return d
+	}
+
+	log.Printf("[updater] %s: fallback image has no matching RepoDigests for %s", svc.Name, registryPrefix)
+	return ""
 }
 
 func (u *Updater) deploy(ctx context.Context, svc config.Service, oldDigest, newDigest string) error {
@@ -353,6 +425,17 @@ func (u *Updater) BlockedDigests() map[string]string {
 	defer u.blockedMu.RUnlock()
 	result := make(map[string]string, len(u.blocked))
 	for k, v := range u.blocked {
+		result[k] = v
+	}
+	return result
+}
+
+// NotFoundServices returns a copy of the not-found service->digest map.
+func (u *Updater) NotFoundServices() map[string]string {
+	u.notFoundMu.RLock()
+	defer u.notFoundMu.RUnlock()
+	result := make(map[string]string, len(u.notFound))
+	for k, v := range u.notFound {
 		result[k] = v
 	}
 	return result
