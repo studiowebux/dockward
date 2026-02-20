@@ -35,6 +35,7 @@ func NewAPI(updater *Updater, metrics *Metrics, port string) *API {
 	mux.HandleFunc("/trigger/", api.handleTriggerService)
 	mux.HandleFunc("/blocked", api.handleListBlocked)
 	mux.HandleFunc("/blocked/", api.handleUnblockService)
+	mux.HandleFunc("/not-found", api.handleListNotFound)
 	mux.HandleFunc("/health", api.handleHealth)
 	mux.HandleFunc("/metrics", api.handleMetrics)
 
@@ -119,6 +120,15 @@ func (a *API) handleListBlocked(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, a.updater.BlockedDigests())
+}
+
+// GET /not-found - list services with unresolvable local digests
+func (a *API) handleListNotFound(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, a.updater.NotFoundServices())
 }
 
 // DELETE /blocked/<service> - unblock a service

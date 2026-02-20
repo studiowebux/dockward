@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-02-20
+
+### Fixed
+- Updater poll spam: when local image digest cannot be resolved, the updater no longer calls deploy every poll cycle. A `notFound` suppression map tracks the remote digest at time of failure and silences retries until the registry digest changes.
+- Healer noise during deploys: `handleHealthy` now checks `IsDeploying()` to suppress spurious "Container recovered and is healthy" notifications during legitimate deploys.
+
+### Added
+- `GET /not-found` API endpoint to list services with unresolvable local digests.
+
+## [0.2.1] - 2026-02-20
+
+### Fixed
+- Updater redeploying every poll cycle due to `url.PathEscape` encoding `/` in image names, causing `InspectImage` to fail on Docker API lookups
+- Removed `url.PathEscape` from image path parameters (`InspectImage`, `TagImage`, `RemoveImage`) to match Docker SDK behavior
+- Added container-based fallback for local digest resolution: if image inspect by reference fails, resolves via running container's image ID
+- Swallowed errors from `InspectImage` now logged for debuggability
+
 ## [0.2.0] - 2026-02-19
 
 ### Added
@@ -44,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd service unit
 - Version flag (`-version`) with build-time injection via ldflags
 
-[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/studiowebux/dockward/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/studiowebux/dockward/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/studiowebux/dockward/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/studiowebux/dockward/releases/tag/v0.1.0
