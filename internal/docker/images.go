@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+// NOTE: Image name path parameters (InspectImage, TagImage, RemoveImage) are NOT
+// url.PathEscape'd. Docker's API router uses {name:.*} which handles embedded
+// slashes (e.g. "localhost:5000/myapp:latest"). Escaping slashes to %2F breaks
+// lookups on some Docker versions. This matches Docker SDK behavior.
+
 // ImageInspect holds image details from the inspect endpoint.
 type ImageInspect struct {
 	ID          string   `json:"Id"`
@@ -18,7 +23,7 @@ type ImageInspect struct {
 
 // InspectImage returns details for a local image.
 func (c *Client) InspectImage(ctx context.Context, name string) (*ImageInspect, error) {
-	data, err := c.get(ctx, "/images/"+url.PathEscape(name)+"/json")
+	data, err := c.get(ctx, "/images/"+name+"/json")
 	if err != nil {
 		return nil, fmt.Errorf("inspect image %s: %w", name, err)
 	}
@@ -33,7 +38,7 @@ func (c *Client) InspectImage(ctx context.Context, name string) (*ImageInspect, 
 // src is the existing image (name:tag or ID), repo and tag are the new reference.
 func (c *Client) TagImage(ctx context.Context, src, repo, tag string) error {
 	path := fmt.Sprintf("/images/%s/tag?repo=%s&tag=%s",
-		url.PathEscape(src),
+		src,
 		url.QueryEscape(repo),
 		url.QueryEscape(tag),
 	)
@@ -80,7 +85,7 @@ func (c *Client) PullImage(ctx context.Context, image string) error {
 
 // RemoveImage removes a local image.
 func (c *Client) RemoveImage(ctx context.Context, name string) error {
-	return c.delete(ctx, "/images/"+url.PathEscape(name))
+	return c.delete(ctx, "/images/"+name)
 }
 
 // LocalDigest returns the registry digest for a local image.
