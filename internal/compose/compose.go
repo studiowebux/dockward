@@ -9,18 +9,21 @@ import (
 	"strings"
 )
 
-// Pull runs "docker compose -p <project> -f <file> pull" for the given compose file.
-func Pull(ctx context.Context, composeFile, project string) error {
-	return run(ctx, composeFile, project, "pull")
+// Pull runs "docker compose -p <project> -f <file>... pull" for the given compose files.
+func Pull(ctx context.Context, composeFiles []string, project string) error {
+	return run(ctx, composeFiles, project, "pull")
 }
 
-// Up runs "docker compose -p <project> -f <file> up -d" for the given compose file.
-func Up(ctx context.Context, composeFile, project string) error {
-	return run(ctx, composeFile, project, "up", "-d")
+// Up runs "docker compose -p <project> -f <file>... up -d" for the given compose files.
+func Up(ctx context.Context, composeFiles []string, project string) error {
+	return run(ctx, composeFiles, project, "up", "-d")
 }
 
-func run(ctx context.Context, composeFile, project string, args ...string) error {
-	cmdArgs := []string{"compose", "-p", project, "-f", composeFile}
+func run(ctx context.Context, composeFiles []string, project string, args ...string) error {
+	cmdArgs := []string{"compose", "-p", project}
+	for _, f := range composeFiles {
+		cmdArgs = append(cmdArgs, "-f", f)
+	}
 	cmdArgs = append(cmdArgs, args...)
 
 	log.Printf("[compose] docker %s", strings.Join(cmdArgs, " "))

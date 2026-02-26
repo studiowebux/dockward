@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-26
+
+### Added
+- `compose_files` config field accepts an ordered list of compose files merged left to right (e.g. base + override). `compose_file` (singular) remains supported for backward compatibility and is promoted to `compose_files` at load time.
+
+### Fixed
+- Healer hallucination: repeated "recovered" alerts fired on every Docker health event during the cooldown window. The cooldown entry is now consumed on first use.
+- Healer missing recovery alert: degraded state was not cleared when a healthy event arrived during an active deploy cycle, leaving the flag stuck. State is now always cleaned up on healthy, regardless of deploy status.
+- Healer double notification: when the healer restarted a container, both `verifyAfterRestart` and the healthy event handler could send a recovery alert. `verifyAfterRestart` now skips the notification if the healthy event already handled it.
+
 ## [0.2.2] - 2026-02-20
 
 ### Fixed
@@ -61,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd service unit
 - Version flag (`-version`) with build-time injection via ldflags
 
-[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/studiowebux/dockward/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/studiowebux/dockward/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/studiowebux/dockward/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/studiowebux/dockward/compare/v0.1.0...v0.2.0

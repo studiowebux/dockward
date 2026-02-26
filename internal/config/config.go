@@ -60,16 +60,17 @@ type Webhook struct {
 
 // Service defines a watched Docker service.
 type Service struct {
-	Name           string `json:"name"`
-	Image          string `json:"image"`
-	ComposeFile    string `json:"compose_file"`
-	ComposeProject string `json:"compose_project"`
-	ContainerName  string `json:"container_name,omitempty"`
-	AutoUpdate     bool   `json:"auto_update"`
-	AutoHeal       bool   `json:"auto_heal"`
-	HealthGrace    int    `json:"health_grace"`    // seconds, default 60
-	HealCooldown   int    `json:"heal_cooldown"`   // seconds, default 300
-	HealMaxRestarts int   `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3
+	Name           string   `json:"name"`
+	Image          string   `json:"image"`
+	ComposeFile    string   `json:"compose_file,omitempty"`  // Deprecated: use compose_files
+	ComposeFiles   []string `json:"compose_files,omitempty"` // Ordered list of compose files; merged left to right
+	ComposeProject string   `json:"compose_project"`
+	ContainerName  string   `json:"container_name,omitempty"`
+	AutoUpdate     bool     `json:"auto_update"`
+	AutoHeal       bool     `json:"auto_heal"`
+	HealthGrace    int      `json:"health_grace"`     // seconds, default 60
+	HealCooldown   int      `json:"heal_cooldown"`    // seconds, default 300
+	HealMaxRestarts int     `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3
 }
 
 // Load reads and parses a JSON config file.
@@ -111,6 +112,10 @@ func (c *Config) setDefaults() {
 		c.API.Port = "9090"
 	}
 	for i := range c.Services {
+		// Backward compat: promote deprecated compose_file into compose_files.
+		if len(c.Services[i].ComposeFiles) == 0 && c.Services[i].ComposeFile != "" {
+			c.Services[i].ComposeFiles = []string{c.Services[i].ComposeFile}
+		}
 		if c.Services[i].HealthGrace <= 0 {
 			c.Services[i].HealthGrace = 60
 		}
@@ -132,8 +137,8 @@ func (c *Config) validate() error {
 			if svc.Image == "" {
 				return fmt.Errorf("service[%d] %q: image is required when auto_update is true", i, svc.Name)
 			}
-			if svc.ComposeFile == "" {
-				return fmt.Errorf("service[%d] %q: compose_file is required when auto_update is true", i, svc.Name)
+			if len(svc.ComposeFiles) == 0 {
+				return fmt.Errorf("service[%d] %q: compose_files (or deprecated compose_file) is required when auto_update is true", i, svc.Name)
 			}
 			if svc.ComposeProject == "" {
 				return fmt.Errorf("service[%d] %q: compose_project is required when auto_update is true", i, svc.Name)

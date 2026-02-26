@@ -32,7 +32,22 @@
     {
       "name": "minimaldoc",
       "image": "minimaldoc:latest",
-      "compose_file": "/srv/minimaldoc.com/minimaldoc-landing-main/docker-compose.yml",
+      "compose_files": [
+        "/srv/minimaldoc.com/minimaldoc-landing-main/docker-compose.yml"
+      ],
+      "compose_project": "minimaldoc",
+      "auto_update": true,
+      "auto_heal": true,
+      "health_grace": 60,
+      "heal_cooldown": 300
+    },
+    {
+      "name": "minimaldoc-with-override",
+      "image": "minimaldoc:latest",
+      "compose_files": [
+        "/srv/minimaldoc.com/docker-compose.yml",
+        "/srv/minimaldoc.com/docker-compose.override.yml"
+      ],
       "compose_project": "minimaldoc",
       "auto_update": true,
       "auto_heal": true,
@@ -42,7 +57,9 @@
     {
       "name": "proxy",
       "image": "",
-      "compose_file": "/srv/proxy/proxy-main/docker-compose.yml",
+      "compose_files": [
+        "/srv/proxy/proxy-main/docker-compose.yml"
+      ],
       "compose_project": "proxy",
       "auto_update": false,
       "auto_heal": true,

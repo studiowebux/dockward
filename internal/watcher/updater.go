@@ -254,11 +254,11 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, oldDigest, new
 
 	// Step 2: Pull new image and recreate via compose.
 	log.Printf("[updater] %s: pulling and deploying", svc.Name)
-	if err := compose.Pull(ctx, svc.ComposeFile, svc.ComposeProject); err != nil {
+	if err := compose.Pull(ctx, svc.ComposeFiles, svc.ComposeProject); err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose pull: %w", err)
 	}
-	if err := compose.Up(ctx, svc.ComposeFile, svc.ComposeProject); err != nil {
+	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject); err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose up: %w", err)
 	}
@@ -387,7 +387,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 		return
 	}
 
-	if err := compose.Up(ctx, svc.ComposeFile, svc.ComposeProject); err != nil {
+	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject); err != nil {
 		log.Printf("[updater] %s: rollback compose up failed: %v", svc.Name, err)
 		u.metrics.IncFailures(svc.Name)
 		u.dispatcher.Send(ctx, notify.Alert{
