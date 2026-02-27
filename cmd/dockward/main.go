@@ -72,11 +72,12 @@ func main() {
 		log.Printf("audit log: %s", cfg.Audit.Path)
 	}
 
-	// Create metrics, updater, healer, and API.
+	// Create metrics, updater, healer, monitor, and API.
 	metrics := watcher.NewMetrics()
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
-	api := watcher.NewAPI(updater, healer, metrics, cfg.API.Port)
+	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
+	api := watcher.NewAPI(updater, healer, metrics, monitor, cfg.API.Port)
 
 	// Context with signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -94,6 +95,7 @@ func main() {
 	// Start goroutines.
 	go updater.Run(ctx)
 	go healer.Run(ctx)
+	go monitor.Run(ctx)
 	go api.Run(ctx)
 
 	log.Printf("dockward %s started", version)

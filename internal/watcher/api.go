@@ -17,16 +17,18 @@ type API struct {
 	updater *Updater
 	healer  *Healer
 	metrics *Metrics
+	monitor *Monitor
 	server  *http.Server
 }
 
 // NewAPI creates the trigger/metrics API on the given port.
-func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, port string) *API {
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, port string) *API {
 	mux := http.NewServeMux()
 	api := &API{
 		updater: updater,
 		healer:  healer,
 		metrics: metrics,
+		monitor: monitor,
 		server: &http.Server{
 			Addr:         "127.0.0.1:" + port,
 			Handler:      mux,
@@ -178,6 +180,11 @@ type serviceStatus struct {
 	RollbacksTotal int64 `json:"rollbacks_total"`
 	RestartsTotal  int64 `json:"restarts_total"`
 	FailuresTotal  int64 `json:"failures_total"`
+	// Resource usage — populated when cpu_threshold or memory_threshold is configured.
+	CPUPercent    float64 `json:"cpu_percent,omitempty"`
+	MemoryPercent float64 `json:"memory_percent,omitempty"`
+	MemoryUsageMB float64 `json:"memory_usage_mb,omitempty"`
+	MemoryLimitMB float64 `json:"memory_limit_mb,omitempty"`
 }
 
 // GET /status - aggregated state for all configured services
@@ -242,10 +249,11 @@ type stateSnap struct {
 	restartCounts map[string]int
 	healthGauges  map[string]bool
 	counters      map[string]ServiceCounters
+	stats         map[string]ServiceStats
 }
 
 func (a *API) stateSnapshot() stateSnap {
-	return stateSnap{
+	snap := stateSnap{
 		blocked:       a.updater.BlockedDigests(),
 		notFound:      a.updater.NotFoundServices(),
 		errored:       a.updater.ErroredServices(),
@@ -255,6 +263,10 @@ func (a *API) stateSnapshot() stateSnap {
 		healthGauges:  a.metrics.HealthSnapshot(),
 		counters:      a.metrics.CountersSnapshot(),
 	}
+	if a.monitor != nil {
+		snap.stats = a.monitor.StatsSnapshot()
+	}
+	return snap
 }
 
 func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStatus {
@@ -279,6 +291,12 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 		s.RollbacksTotal = c.Rollbacks
 		s.RestartsTotal  = c.Restarts
 		s.FailuresTotal  = c.Failures
+	}
+	if st, ok := snap.stats[svc.Name]; ok {
+		s.CPUPercent    = st.CPUPercent
+		s.MemoryPercent = st.MemoryPercent
+		s.MemoryUsageMB = st.MemoryUsageMB
+		s.MemoryLimitMB = st.MemoryLimitMB
 	}
 	s.Status = synthesizeStatus(s)
 	return s

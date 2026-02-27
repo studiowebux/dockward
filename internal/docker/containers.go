@@ -71,13 +71,18 @@ func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 // Uses Docker API label filter: com.docker.compose.project=<project>.
 func (c *Client) ListContainersByProject(ctx context.Context, project string) ([]Container, error) {
 	filter := url.QueryEscape(fmt.Sprintf(`{"label":["com.docker.compose.project=%s"]}`, project))
-	data, err := c.get(ctx, "/containers/json?filters="+filter)
+	return c.ListContainersFiltered(ctx, filter)
+}
+
+// ListContainersFiltered returns containers matching a pre-encoded Docker API filter string.
+func (c *Client) ListContainersFiltered(ctx context.Context, encodedFilter string) ([]Container, error) {
+	data, err := c.get(ctx, "/containers/json?all=true&filters="+encodedFilter)
 	if err != nil {
-		return nil, fmt.Errorf("list containers by project %s: %w", project, err)
+		return nil, fmt.Errorf("list containers (filtered): %w", err)
 	}
 	var containers []Container
 	if err := decodeJSON(data, &containers); err != nil {
-		return nil, fmt.Errorf("decode containers by project %s: %w", project, err)
+		return nil, fmt.Errorf("decode containers (filtered): %w", err)
 	}
 	return containers, nil
 }

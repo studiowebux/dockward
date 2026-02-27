@@ -73,10 +73,12 @@ type Service struct {
 	ComposeProject string   `json:"compose_project"`
 	ContainerName  string   `json:"container_name,omitempty"`
 	EnvFile        string   `json:"env_file,omitempty"`
-	AutoUpdate     bool     `json:"auto_update"`
-	AutoStart      bool     `json:"auto_start"`
-	AutoHeal       bool     `json:"auto_heal"`
-	ComposeWatch   bool     `json:"compose_watch"` // re-deploy on compose file content change (no pull)
+	AutoUpdate      bool    `json:"auto_update"`
+	AutoStart       bool    `json:"auto_start"`
+	AutoHeal        bool    `json:"auto_heal"`
+	ComposeWatch    bool    `json:"compose_watch"`    // re-deploy on compose file content change (no pull)
+	CPUThreshold    float64 `json:"cpu_threshold"`    // alert when CPU % exceeds this value; 0 = disabled
+	MemoryThreshold float64 `json:"memory_threshold"` // alert when memory % exceeds this value; 0 = disabled
 	HealthGrace    int      `json:"health_grace"`     // seconds, default 60
 	HealCooldown   int      `json:"heal_cooldown"`    // seconds, default 300
 	HealMaxRestarts int     `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3
