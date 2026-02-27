@@ -1,6 +1,6 @@
 title: Dockward
 description: Docker deploy guard — polls a local registry for image changes, auto-deploys via docker compose with rollback, blocks bad digests, and auto-heals unhealthy containers.
-baseUrl: /
+baseUrl: /dockward
 nav:
   - title: Getting Started
     path: 01-getting-started/
