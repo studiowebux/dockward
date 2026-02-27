@@ -14,12 +14,27 @@ import (
 	"github.com/studiowebux/dockward/internal/notify"
 	"github.com/studiowebux/dockward/internal/registry"
 	"github.com/studiowebux/dockward/internal/watcher"
+	"github.com/studiowebux/dockward/internal/wizard"
 )
 
 // version is set at build time via ldflags: -X main.version=v0.1.0
 var version = "dev"
 
 func main() {
+	// Subcommand: dockward config [--config <path>]
+	// Interactive wizard to create or edit the config file.
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		fs := flag.NewFlagSet("config", flag.ExitOnError)
+		configPath := fs.String("config", "/etc/dockward/config.json", "path to config file")
+		if err := fs.Parse(os.Args[2:]); err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		if err := wizard.Run(*configPath); err != nil {
+			log.Fatalf("config wizard: %v", err)
+		}
+		return
+	}
+
 	configPath := flag.String("config", "/etc/dockward/config.json", "path to config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
