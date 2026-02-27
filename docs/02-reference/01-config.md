@@ -19,6 +19,7 @@ For a walkthrough with annotated examples, see [Configuration](../01-getting-sta
 {
   "registry": { ... },
   "api": { ... },
+  "audit": { ... },
   "notifications": { ... },
   "services": [ ... ]
 }
@@ -53,6 +54,22 @@ Controls the HTTP API server. The API binds to `127.0.0.1` only — it is never 
   "port": "9090"
 }
 ```
+
+## `audit`
+
+Audit logging is opt-in. Omit the section or leave `path` empty to disable it.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | `""` | Absolute path to the audit log file. Created if it does not exist. Empty disables audit logging |
+
+```json
+"audit": {
+  "path": "/var/log/dockward/audit.jsonl"
+}
+```
+
+The file is written in [JSON Lines](https://jsonlines.org) format — one JSON object per line. Each entry contains: `timestamp`, `service`, `event`, `message`, `level`, and optional fields (`old_digest`, `new_digest`, `container`, `reason`). See [Audit Log Guide](../03-guides/05-audit-log.md) for event types and usage.
 
 ## `notifications`
 
@@ -128,6 +145,9 @@ Validation failures at startup cause dockward to exit with a non-zero status. Ch
   },
   "api": {
     "port": "9090"
+  },
+  "audit": {
+    "path": "/var/log/dockward/audit.jsonl"
   },
   "notifications": {
     "discord": {

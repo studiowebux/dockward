@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/compose"
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/docker"
@@ -23,6 +24,7 @@ type Updater struct {
 	registry   *registry.Client
 	dispatcher *notify.Dispatcher
 	metrics    *Metrics
+	audit      *audit.Logger
 
 	// deploying tracks services currently in a deploy cycle.
 	// The healer checks this to avoid interfering with rollback.
@@ -58,17 +60,18 @@ type Updater struct {
 }
 
 // NewUpdater creates an image updater.
-func NewUpdater(cfg *config.Config, dc *docker.Client, rc *registry.Client, dispatcher *notify.Dispatcher, metrics *Metrics) *Updater {
+func NewUpdater(cfg *config.Config, dc *docker.Client, rc *registry.Client, dispatcher *notify.Dispatcher, metrics *Metrics, al *audit.Logger) *Updater {
 	return &Updater{
-		cfg:        cfg,
-		docker:     dc,
-		registry:   rc,
-		dispatcher: dispatcher,
-		metrics:    metrics,
-		deploying:  make(map[string]time.Time),
-		blocked:    make(map[string]string),
-		notFound:   make(map[string]string),
-		errored:    make(map[string]string),
+		cfg:            cfg,
+		docker:         dc,
+		registry:       rc,
+		dispatcher:     dispatcher,
+		metrics:        metrics,
+		audit:          al,
+		deploying:      make(map[string]time.Time),
+		blocked:        make(map[string]string),
+		notFound:       make(map[string]string),
+		errored:        make(map[string]string),
 		startAttempted: make(map[string]string),
 	}
 }
@@ -236,6 +239,14 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 			Message: "Image not found locally. Verify compose file image field matches registry. Suppressing until registry digest changes.",
 			Level:   notify.LevelWarning,
 		})
+		if err := u.audit.Write(audit.Entry{
+			Service: svc.Name,
+			Event:   "not_found",
+			Message: "Image not found locally. Suppressing until registry digest changes.",
+			Level:   "warning",
+		}); err != nil {
+			log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
+		}
 		return nil
 	}
 
@@ -469,6 +480,17 @@ func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, oldDi
 		Container: containerName,
 		Level:     notify.LevelInfo,
 	})
+	if err := u.audit.Write(audit.Entry{
+		Service:   svc.Name,
+		Event:     "updated",
+		Message:   "Deployed new image successfully.",
+		Level:     "info",
+		OldDigest: oldDigest,
+		NewDigest: newDigest,
+		Container: containerName,
+	}); err != nil {
+		log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
+	}
 	u.cleanupRollback(ctx, registryPrefix)
 }
 
@@ -527,6 +549,17 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 		NewDigest: newDigest,
 		Level:     notify.LevelWarning,
 	})
+	if err := u.audit.Write(audit.Entry{
+		Service:   svc.Name,
+		Event:     "rolled_back",
+		Message:   "Rolled back to previous image.",
+		Level:     "warning",
+		OldDigest: oldDigest,
+		NewDigest: newDigest,
+		Reason:    reason,
+	}); err != nil {
+		log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
+	}
 
 	u.cleanupRollback(ctx, registryPrefix)
 }

@@ -12,8 +12,14 @@ import (
 type Config struct {
 	Registry      Registry      `json:"registry"`
 	API           API           `json:"api"`
+	Audit         Audit         `json:"audit"`
 	Notifications Notifications `json:"notifications"`
 	Services      []Service     `json:"services"`
+}
+
+// Audit defines the audit log file. Empty path disables audit logging.
+type Audit struct {
+	Path string `json:"path"` // absolute path to JSON Lines log file; empty = disabled
 }
 
 // API defines the trigger/metrics HTTP server.

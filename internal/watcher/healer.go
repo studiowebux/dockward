@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/docker"
 	"github.com/studiowebux/dockward/internal/notify"
@@ -20,6 +21,7 @@ type Healer struct {
 	dispatcher *notify.Dispatcher
 	updater    *Updater
 	metrics    *Metrics
+	audit      *audit.Logger
 
 	// cooldowns tracks when each container can next be auto-restarted.
 	cooldowns   map[string]time.Time
@@ -43,13 +45,14 @@ type Healer struct {
 }
 
 // NewHealer creates a health monitor.
-func NewHealer(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatcher, updater *Updater, metrics *Metrics) *Healer {
+func NewHealer(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatcher, updater *Updater, metrics *Metrics, al *audit.Logger) *Healer {
 	return &Healer{
 		cfg:           cfg,
 		docker:        dc,
 		dispatcher:    dispatcher,
 		updater:       updater,
 		metrics:       metrics,
+		audit:         al,
 		cooldowns:     make(map[string]time.Time),
 		degraded:      make(map[string]bool),
 		restartCounts: make(map[string]int),
@@ -139,6 +142,16 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 
 	// Restart the container.
 	log.Printf("[healer] %s: restarting", svc.Name)
+	if err := h.audit.Write(audit.Entry{
+		Service:   svc.Name,
+		Event:     "restarting",
+		Message:   "Restarting unhealthy container.",
+		Level:     "warning",
+		Container: containerName,
+		Reason:    reason,
+	}); err != nil {
+		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+	}
 	if err := h.docker.RestartContainer(ctx, containerID, 10); err != nil {
 		log.Printf("[healer] %s: restart failed: %v", svc.Name, err)
 		h.metrics.IncFailures(svc.Name)
@@ -196,6 +209,16 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 				Container: containerName,
 				Level:     notify.LevelCritical,
 			})
+			if err := h.audit.Write(audit.Entry{
+				Service:   svc.Name,
+				Event:     "critical",
+				Message:   fmt.Sprintf("Giving up after %d consecutive failed restarts. Manual intervention required.", count),
+				Level:     "critical",
+				Container: containerName,
+				Reason:    info.LastHealthOutput(),
+			}); err != nil {
+				log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+			}
 		} else {
 			h.dispatcher.Send(ctx, notify.Alert{
 				Service:   svc.Name,
@@ -234,6 +257,16 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 		Container: containerName,
 		Level:     notify.LevelWarning,
 	})
+	if err := h.audit.Write(audit.Entry{
+		Service:   svc.Name,
+		Event:     "restarted",
+		Message:   "Restarted unhealthy container successfully.",
+		Level:     "info",
+		Container: containerName,
+		Reason:    reason,
+	}); err != nil {
+		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+	}
 }
 
 func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, containerName string) {
@@ -276,6 +309,15 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 		Container: containerName,
 		Level:     notify.LevelInfo,
 	})
+	if err := h.audit.Write(audit.Entry{
+		Service:   svc.Name,
+		Event:     "healthy",
+		Message:   "Container recovered and is healthy.",
+		Level:     "info",
+		Container: containerName,
+	}); err != nil {
+		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+	}
 }
 
 func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerName string) {
@@ -300,6 +342,15 @@ func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerN
 		Container: containerName,
 		Level:     notify.LevelCritical,
 	})
+	if err := h.audit.Write(audit.Entry{
+		Service:   svc.Name,
+		Event:     "died",
+		Message:   "Container exited unexpectedly.",
+		Level:     "critical",
+		Container: containerName,
+	}); err != nil {
+		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+	}
 }
 
 // findServiceByEvent matches a Docker event to a configured service
