@@ -120,6 +120,7 @@ Array of service definitions. Each service is independent — fields used depend
 | `auto_update` | boolean | `false` | Enable registry polling and auto-deploy for this service |
 | `auto_start` | boolean | `false` | When `true` and digests match, start the compose project if no containers are running. Forces `down`+`up` if containers are stuck (created/restarting) |
 | `auto_heal` | boolean | `false` | Enable auto-restart on unhealthy health status |
+| `compose_watch` | boolean | `false` | Re-deploy on compose file content change (no image pull). Computes SHA-256 of all `compose_files` each poll cycle; runs `compose up -d` when the hash changes. First run stores the hash without deploying |
 | `health_grace` | integer | `60` | Seconds to wait after deploy before evaluating container health |
 | `heal_cooldown` | integer | `300` | Minimum seconds between consecutive auto-restarts |
 | `heal_max_restarts` | integer | `3` | Maximum consecutive failed restarts before giving up |

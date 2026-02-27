@@ -3,8 +3,11 @@ package watcher
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +60,11 @@ type Updater struct {
 	// changes, allowing a retry with a new image.
 	startAttempted   map[string]string
 	startAttemptedMu sync.RWMutex
+
+	// composeHashes maps service name -> SHA-256 hex of concatenated compose file contents.
+	// Used by checkComposeDrift to detect spec changes between poll cycles.
+	composeHashes   map[string]string
+	composeHashesMu sync.Mutex
 }
 
 // NewUpdater creates an image updater.
@@ -73,6 +81,7 @@ func NewUpdater(cfg *config.Config, dc *docker.Client, rc *registry.Client, disp
 		notFound:       make(map[string]string),
 		errored:        make(map[string]string),
 		startAttempted: make(map[string]string),
+		composeHashes:  make(map[string]string),
 	}
 }
 
@@ -128,16 +137,83 @@ func (u *Updater) Run(ctx context.Context) {
 func (u *Updater) pollAll(ctx context.Context) {
 	u.metrics.RecordPoll()
 	for _, svc := range u.cfg.Services {
-		if !svc.AutoUpdate {
-			continue
-		}
 		if ctx.Err() != nil {
 			return
 		}
-		if err := u.checkAndUpdate(ctx, svc); err != nil {
-			u.handlePollError(ctx, svc, err)
+		if svc.AutoUpdate {
+			if err := u.checkAndUpdate(ctx, svc); err != nil {
+				u.handlePollError(ctx, svc, err)
+			}
+		}
+		if svc.ComposeWatch {
+			if err := u.checkComposeDrift(ctx, svc); err != nil {
+				log.Printf("[updater] %s: compose drift check error: %v", svc.Name, err)
+			}
 		}
 	}
+}
+
+// composeHash returns the SHA-256 hex digest of the concatenated contents of all files.
+func (u *Updater) composeHash(files []string) (string, error) {
+	h := sha256.New()
+	for _, path := range files {
+		f, err := os.Open(path) // #nosec G304 -- path from config, not user input
+		if err != nil {
+			return "", fmt.Errorf("open %s: %w", path, err)
+		}
+		_, err = io.Copy(h, f)
+		f.Close()
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// checkComposeDrift detects byte-level changes in compose files and runs
+// compose up -d (no pull) when the content hash differs from the last known hash.
+// First-run stores the hash without deploying — the service is already running the current spec.
+func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) error {
+	if len(svc.ComposeFiles) == 0 {
+		return nil
+	}
+
+	hash, err := u.composeHash(svc.ComposeFiles)
+	if err != nil {
+		return err
+	}
+
+	u.composeHashesMu.Lock()
+	prev := u.composeHashes[svc.Name]
+	u.composeHashes[svc.Name] = hash
+	u.composeHashesMu.Unlock()
+
+	if prev == "" || prev == hash {
+		return nil // first run or no change
+	}
+
+	log.Printf("[updater] %s: compose file changed, redeploying", svc.Name)
+	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+		return fmt.Errorf("compose up (drift): %w", err)
+	}
+
+	if werr := u.audit.Write(audit.Entry{
+		Service: svc.Name,
+		Event:   "compose_drift",
+		Message: "Compose file changed. Redeployed without image pull.",
+		Level:   "info",
+	}); werr != nil {
+		log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+	}
+
+	u.dispatcher.Send(ctx, notify.Alert{
+		Service: svc.Name,
+		Event:   "compose_drift",
+		Message: "Compose file changed. Redeployed without image pull.",
+		Level:   notify.LevelInfo,
+	})
+
+	return nil
 }
 
 // handlePollError sends a notification on the first occurrence of an error

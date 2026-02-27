@@ -76,6 +76,7 @@ type Service struct {
 	AutoUpdate     bool     `json:"auto_update"`
 	AutoStart      bool     `json:"auto_start"`
 	AutoHeal       bool     `json:"auto_heal"`
+	ComposeWatch   bool     `json:"compose_watch"` // re-deploy on compose file content change (no pull)
 	HealthGrace    int      `json:"health_grace"`     // seconds, default 60
 	HealCooldown   int      `json:"heal_cooldown"`    // seconds, default 300
 	HealMaxRestarts int     `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3

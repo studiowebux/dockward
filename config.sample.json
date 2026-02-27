@@ -28,6 +28,9 @@
       }
     ]
   },
+  "audit": {
+    "path": "/var/log/dockward/audit.jsonl"
+  },
   "services": [
     {
       "name": "minimaldoc",
@@ -38,6 +41,7 @@
       "compose_project": "minimaldoc",
       "auto_update": true,
       "auto_heal": true,
+      "compose_watch": false,
       "health_grace": 60,
       "heal_cooldown": 300
     },
