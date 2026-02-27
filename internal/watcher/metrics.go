@@ -81,6 +81,17 @@ func (m *Metrics) RecordPoll() {
 	m.mu.Unlock()
 }
 
+// HealthSnapshot returns a copy of the service healthy/unhealthy gauges.
+func (m *Metrics) HealthSnapshot() map[string]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]bool, len(m.serviceHealthy))
+	for k, v := range m.serviceHealthy {
+		result[k] = v
+	}
+	return result
+}
+
 // Prometheus returns metrics in Prometheus text exposition format.
 func (m *Metrics) Prometheus() string {
 	m.mu.RLock()

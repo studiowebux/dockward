@@ -99,7 +99,9 @@ Array of service definitions. Each service is independent — fields used depend
 | `compose_file` | string | — | Deprecated singular form. Promoted to `compose_files` at load time. Still accepted |
 | `compose_project` | string | — | Docker Compose project name (`-p` flag). Required when `auto_update: true` |
 | `container_name` | string | — | Container name for event matching. Used for standalone containers or as fallback |
+| `env_file` | string | — | Path to a `.env` file. Variables are loaded into the process environment before running compose, making them available for `${VAR}` interpolation in compose files |
 | `auto_update` | boolean | `false` | Enable registry polling and auto-deploy for this service |
+| `auto_start` | boolean | `false` | When `true` and digests match, start the compose project if no containers are running. Forces `down`+`up` if containers are stuck (created/restarting) |
 | `auto_heal` | boolean | `false` | Enable auto-restart on unhealthy health status |
 | `health_grace` | integer | `60` | Seconds to wait after deploy before evaluating container health |
 | `heal_cooldown` | integer | `300` | Minimum seconds between consecutive auto-restarts |
@@ -160,7 +162,9 @@ Validation failures at startup cause dockward to exit with a non-zero status. Ch
         "/srv/myapp/docker-compose.override.yml"
       ],
       "compose_project": "myapp",
+      "env_file": "/srv/myapp/.env",
       "auto_update": true,
+      "auto_start": true,
       "auto_heal": true,
       "health_grace": 60,
       "heal_cooldown": 300,

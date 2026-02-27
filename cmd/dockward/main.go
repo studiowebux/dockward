@@ -50,7 +50,7 @@ func main() {
 	metrics := watcher.NewMetrics()
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics)
-	api := watcher.NewAPI(updater, metrics, cfg.API.Port)
+	api := watcher.NewAPI(updater, healer, metrics, cfg.API.Port)
 
 	// Context with signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())

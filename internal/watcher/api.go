@@ -7,21 +7,25 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/studiowebux/dockward/internal/config"
 )
 
 // API exposes HTTP endpoints for triggering updates, health, and metrics.
 // Listens on localhost only.
 type API struct {
 	updater *Updater
+	healer  *Healer
 	metrics *Metrics
 	server  *http.Server
 }
 
 // NewAPI creates the trigger/metrics API on the given port.
-func NewAPI(updater *Updater, metrics *Metrics, port string) *API {
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, port string) *API {
 	mux := http.NewServeMux()
 	api := &API{
 		updater: updater,
+		healer:  healer,
 		metrics: metrics,
 		server: &http.Server{
 			Addr:         "127.0.0.1:" + port,
@@ -36,6 +40,9 @@ func NewAPI(updater *Updater, metrics *Metrics, port string) *API {
 	mux.HandleFunc("/blocked", api.handleListBlocked)
 	mux.HandleFunc("/blocked/", api.handleUnblockService)
 	mux.HandleFunc("/not-found", api.handleListNotFound)
+	mux.HandleFunc("/errored", api.handleListErrored)
+	mux.HandleFunc("/status", api.handleStatusAll)
+	mux.HandleFunc("/status/", api.handleStatusService)
 	mux.HandleFunc("/health", api.handleHealth)
 	mux.HandleFunc("/metrics", api.handleMetrics)
 
@@ -97,8 +104,9 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 			found = true
 			log.Printf("[api] manual trigger: %s", svc.Name)
 			go func() {
-				if err := a.updater.checkAndUpdate(context.Background(), svc); err != nil {
-					log.Printf("[api] trigger %s error: %v", svc.Name, err)
+				ctx := context.Background()
+				if err := a.updater.checkAndUpdate(ctx, svc); err != nil {
+					a.updater.handlePollError(ctx, svc, err)
 				}
 			}()
 			break
@@ -129,6 +137,114 @@ func (a *API) handleListNotFound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, a.updater.NotFoundServices())
+}
+
+// GET /errored - list services with persistent poll errors
+func (a *API) handleListErrored(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, a.updater.ErroredServices())
+}
+
+// serviceStatus is the per-service state returned by /status.
+type serviceStatus struct {
+	Name       string `json:"name"`
+	AutoUpdate bool   `json:"auto_update"`
+	AutoStart  bool   `json:"auto_start"`
+	AutoHeal   bool   `json:"auto_heal"`
+	Healthy    *bool  `json:"healthy,omitempty"`
+	Deploying  bool   `json:"deploying"`
+	Blocked    string `json:"blocked,omitempty"`
+	NotFound   string `json:"not_found,omitempty"`
+	Errored    string `json:"errored,omitempty"`
+	Degraded   bool   `json:"degraded"`
+	Exhausted  bool   `json:"exhausted"`
+	Restarts   int    `json:"restart_failures"`
+}
+
+// GET /status - aggregated state for all configured services
+func (a *API) handleStatusAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	snap := a.stateSnapshot()
+	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
+	for _, svc := range a.updater.cfg.Services {
+		services = append(services, a.buildServiceStatus(svc, snap))
+	}
+
+	writeJSON(w, services)
+}
+
+// GET /status/<name> - aggregated state for a single service
+func (a *API) handleStatusService(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serviceName := strings.TrimPrefix(r.URL.Path, "/status/")
+	if serviceName == "" {
+		http.Error(w, "service name required", http.StatusBadRequest)
+		return
+	}
+
+	snap := a.stateSnapshot()
+	for _, svc := range a.updater.cfg.Services {
+		if svc.Name == serviceName {
+			writeJSON(w, a.buildServiceStatus(svc, snap))
+			return
+		}
+	}
+
+	http.Error(w, "service not found", http.StatusNotFound)
+}
+
+// stateSnap holds a point-in-time snapshot of all state maps.
+type stateSnap struct {
+	blocked       map[string]string
+	notFound      map[string]string
+	errored       map[string]string
+	degraded      map[string]bool
+	exhausted     map[string]bool
+	restartCounts map[string]int
+	healthGauges  map[string]bool
+}
+
+func (a *API) stateSnapshot() stateSnap {
+	return stateSnap{
+		blocked:       a.updater.BlockedDigests(),
+		notFound:      a.updater.NotFoundServices(),
+		errored:       a.updater.ErroredServices(),
+		degraded:      a.healer.DegradedServices(),
+		exhausted:     a.healer.ExhaustedServices(),
+		restartCounts: a.healer.RestartCounts(),
+		healthGauges:  a.metrics.HealthSnapshot(),
+	}
+}
+
+func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStatus {
+	s := serviceStatus{
+		Name:       svc.Name,
+		AutoUpdate: svc.AutoUpdate,
+		AutoStart:  svc.AutoStart,
+		AutoHeal:   svc.AutoHeal,
+		Deploying:  a.updater.IsDeploying(svc.Name),
+		Blocked:    snap.blocked[svc.Name],
+		NotFound:   snap.notFound[svc.Name],
+		Errored:    snap.errored[svc.Name],
+		Degraded:   snap.degraded[svc.Name],
+		Exhausted:  snap.exhausted[svc.Name],
+		Restarts:   snap.restartCounts[svc.Name],
+	}
+	if h, ok := snap.healthGauges[svc.Name]; ok {
+		s.Healthy = &h
+	}
+	return s
 }
 
 // DELETE /blocked/<service> - unblock a service

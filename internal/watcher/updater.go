@@ -41,6 +41,20 @@ type Updater struct {
 	// remote digest changes, allowing a retry.
 	notFound   map[string]string
 	notFoundMu sync.RWMutex
+
+	// errored maps service name -> last error message.
+	// Suppresses repeated notifications and log spam for persistent errors
+	// (e.g. registry unreachable, compose network not found).
+	// Cleared when the service poll succeeds again.
+	errored   map[string]string
+	erroredMu sync.RWMutex
+
+	// startAttempted maps service name -> remote digest at time of start.
+	// Prevents repeated compose up when a container won't stay running
+	// (e.g. missing env vars, bad config). Cleared when the remote digest
+	// changes, allowing a retry with a new image.
+	startAttempted   map[string]string
+	startAttemptedMu sync.RWMutex
 }
 
 // NewUpdater creates an image updater.
@@ -54,6 +68,8 @@ func NewUpdater(cfg *config.Config, dc *docker.Client, rc *registry.Client, disp
 		deploying:  make(map[string]time.Time),
 		blocked:    make(map[string]string),
 		notFound:   make(map[string]string),
+		errored:    make(map[string]string),
+		startAttempted: make(map[string]string),
 	}
 }
 
@@ -116,9 +132,54 @@ func (u *Updater) pollAll(ctx context.Context) {
 			return
 		}
 		if err := u.checkAndUpdate(ctx, svc); err != nil {
-			log.Printf("[updater] %s: %v", svc.Name, err)
+			u.handlePollError(ctx, svc, err)
 		}
 	}
+}
+
+// handlePollError sends a notification on the first occurrence of an error
+// for a service. Suppresses repeated log and notification spam if the error
+// message is unchanged across poll cycles.
+func (u *Updater) handlePollError(ctx context.Context, svc config.Service, err error) {
+	msg := err.Error()
+
+	u.erroredMu.RLock()
+	prev := u.errored[svc.Name]
+	u.erroredMu.RUnlock()
+
+	if prev == msg {
+		return
+	}
+
+	u.erroredMu.Lock()
+	u.errored[svc.Name] = msg
+	u.erroredMu.Unlock()
+
+	log.Printf("[updater] %s: %v", svc.Name, err)
+	u.metrics.IncFailures(svc.Name)
+	u.dispatcher.Send(ctx, notify.Alert{
+		Service: svc.Name,
+		Event:   "error",
+		Message: fmt.Sprintf("Poll error: %s", msg),
+		Level:   notify.LevelCritical,
+	})
+}
+
+// clearPollError logs recovery when a previously errored service succeeds.
+func (u *Updater) clearPollError(svc config.Service) {
+	u.erroredMu.RLock()
+	wasErrored := u.errored[svc.Name] != ""
+	u.erroredMu.RUnlock()
+
+	if !wasErrored {
+		return
+	}
+
+	u.erroredMu.Lock()
+	delete(u.errored, svc.Name)
+	u.erroredMu.Unlock()
+
+	log.Printf("[updater] %s: recovered from previous error", svc.Name)
 }
 
 func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error {
@@ -180,10 +241,65 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 
 	// Step 3: Compare.
 	if localDigest == remoteDigest {
+		// Digests match, but verify at least one container is running.
+		_, status := u.findContainerByProject(ctx, svc.ComposeProject)
+		if status == containerRunning {
+			u.startAttemptedMu.Lock()
+			delete(u.startAttempted, svc.Name)
+			u.startAttemptedMu.Unlock()
+			u.clearPollError(svc)
+			return nil
+		}
+
+		// No running container. Only intervene if auto_start is enabled.
+		if !svc.AutoStart {
+			return nil
+		}
+
+		// Check if we already tried this digest.
+		u.startAttemptedMu.RLock()
+		attemptedDigest := u.startAttempted[svc.Name]
+		u.startAttemptedMu.RUnlock()
+		if attemptedDigest == remoteDigest {
+			return nil
+		}
+
+		u.startAttemptedMu.Lock()
+		u.startAttempted[svc.Name] = remoteDigest
+		u.startAttemptedMu.Unlock()
+
+		switch status {
+		case containerStuck:
+			// Containers exist but none running (created/restarting).
+			// Force a clean restart to recover from the stuck state.
+			log.Printf("[updater] %s: containers stuck (created/restarting), forcing down+up", svc.Name)
+			if err := compose.Restart(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+				return fmt.Errorf("compose restart (stuck containers): %w", err)
+			}
+			u.dispatcher.Send(ctx, notify.Alert{
+				Service: svc.Name,
+				Event:   "started",
+				Message: "Containers were stuck. Forced restart (down+up).",
+				Level:   notify.LevelWarning,
+			})
+		default:
+			// No containers at all. Normal start.
+			log.Printf("[updater] %s: image up to date but no containers, starting compose project", svc.Name)
+			if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+				return fmt.Errorf("compose up (no running container): %w", err)
+			}
+			u.dispatcher.Send(ctx, notify.Alert{
+				Service: svc.Name,
+				Event:   "started",
+				Message: "Image up to date but no containers found. Started compose project.",
+				Level:   notify.LevelWarning,
+			})
+		}
 		return nil
 	}
 
 	log.Printf("[updater] %s: digest changed %s -> %s", svc.Name, shortDigest(localDigest), shortDigest(remoteDigest))
+	u.clearPollError(svc)
 	return u.deploy(ctx, svc, localDigest, remoteDigest)
 }
 
@@ -206,8 +322,8 @@ func (u *Updater) resolveLocalDigest(ctx context.Context, svc config.Service, re
 	}
 
 	// Strategy 2: resolve via running container's image ID.
-	containerID := u.findContainerByProject(ctx, svc.ComposeProject)
-	if containerID == "" {
+	containerID, status := u.findContainerByProject(ctx, svc.ComposeProject)
+	if status != containerRunning {
 		log.Printf("[updater] %s: no running container for fallback digest resolution", svc.Name)
 		return ""
 	}
@@ -254,11 +370,11 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, oldDigest, new
 
 	// Step 2: Pull new image and recreate via compose.
 	log.Printf("[updater] %s: pulling and deploying", svc.Name)
-	if err := compose.Pull(ctx, svc.ComposeFiles, svc.ComposeProject); err != nil {
+	if err := compose.Pull(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose pull: %w", err)
 	}
-	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject); err != nil {
+	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose up: %w", err)
 	}
@@ -286,8 +402,8 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		case <-ticker.C:
 		}
 
-		containerID := u.findContainerByProject(ctx, svc.ComposeProject)
-		if containerID == "" {
+		containerID, cStatus := u.findContainerByProject(ctx, svc.ComposeProject)
+		if cStatus == containerNone {
 			if time.Now().After(deadline) {
 				log.Printf("[updater] %s: container not found after grace period, rolling back", svc.Name)
 				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "container not found after deploy")
@@ -387,7 +503,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 		return
 	}
 
-	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject); err != nil {
+	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		log.Printf("[updater] %s: rollback compose up failed: %v", svc.Name, err)
 		u.metrics.IncFailures(svc.Name)
 		u.dispatcher.Send(ctx, notify.Alert{
@@ -416,7 +532,9 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 }
 
 func (u *Updater) cleanupRollback(ctx context.Context, registryPrefix string) {
-	_ = u.docker.RemoveImage(ctx, registryPrefix+":rollback")
+	if err := u.docker.RemoveImage(ctx, registryPrefix+":rollback"); err != nil {
+		log.Printf("[updater] failed to remove rollback image %s:rollback: %v", registryPrefix, err)
+	}
 }
 
 // BlockedDigests returns a copy of the blocked service->digest map.
@@ -441,6 +559,17 @@ func (u *Updater) NotFoundServices() map[string]string {
 	return result
 }
 
+// ErroredServices returns a copy of the errored service->message map.
+func (u *Updater) ErroredServices() map[string]string {
+	u.erroredMu.RLock()
+	defer u.erroredMu.RUnlock()
+	result := make(map[string]string, len(u.errored))
+	for k, v := range u.errored {
+		result[k] = v
+	}
+	return result
+}
+
 // UnblockService clears the blocked digest for a service.
 // Returns true if the service was blocked.
 func (u *Updater) UnblockService(service string) bool {
@@ -455,18 +584,35 @@ func (u *Updater) UnblockService(service string) bool {
 	return ok
 }
 
+// containerStatus describes the state of containers in a compose project.
+type containerStatus int
+
+const (
+	containerNone    containerStatus = iota // No containers exist
+	containerStuck                          // Containers exist but none running (created/restarting)
+	containerRunning                        // At least one container is running or exited
+)
+
 // findContainerByProject finds a container by compose project label.
-// Returns the first container ID (single-container services).
-func (u *Updater) findContainerByProject(ctx context.Context, project string) string {
+// Returns the first running container ID and the project status.
+func (u *Updater) findContainerByProject(ctx context.Context, project string) (string, containerStatus) {
 	containers, err := u.docker.ListContainersByProject(ctx, project)
 	if err != nil {
 		log.Printf("[updater] failed to list containers for project %s: %v", project, err)
-		return ""
+		return "", containerNone
 	}
 	if len(containers) == 0 {
-		return ""
+		return "", containerNone
 	}
-	return containers[0].ID
+	// Return first running container if any exist.
+	for _, c := range containers {
+		if c.State == "running" || c.State == "exited" {
+			return c.ID, containerRunning
+		}
+	}
+	// Containers exist but all are stuck (created/restarting).
+	// Return the first ID so callers can still inspect if needed.
+	return containers[0].ID, containerStuck
 }
 
 // Helper functions for parsing image references.
