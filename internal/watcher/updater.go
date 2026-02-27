@@ -522,6 +522,17 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 			NewDigest: newDigest,
 			Level:     notify.LevelCritical,
 		})
+		if werr := u.audit.Write(audit.Entry{
+			Service:   svc.Name,
+			Event:     "rolled_back",
+			Message:   "Rollback failed: could not retag image.",
+			Level:     "critical",
+			OldDigest: oldDigest,
+			NewDigest: newDigest,
+			Reason:    reason,
+		}); werr != nil {
+			log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+		}
 		return
 	}
 
@@ -537,6 +548,17 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 			NewDigest: newDigest,
 			Level:     notify.LevelCritical,
 		})
+		if werr := u.audit.Write(audit.Entry{
+			Service:   svc.Name,
+			Event:     "rolled_back",
+			Message:   "Rollback compose up failed.",
+			Level:     "critical",
+			OldDigest: oldDigest,
+			NewDigest: newDigest,
+			Reason:    reason,
+		}); werr != nil {
+			log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+		}
 		return
 	}
 
