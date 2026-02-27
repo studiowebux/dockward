@@ -66,7 +66,9 @@ type Service struct {
 	ComposeFiles   []string `json:"compose_files,omitempty"` // Ordered list of compose files; merged left to right
 	ComposeProject string   `json:"compose_project"`
 	ContainerName  string   `json:"container_name,omitempty"`
+	EnvFile        string   `json:"env_file,omitempty"`
 	AutoUpdate     bool     `json:"auto_update"`
+	AutoStart      bool     `json:"auto_start"`
 	AutoHeal       bool     `json:"auto_heal"`
 	HealthGrace    int      `json:"health_grace"`     // seconds, default 60
 	HealCooldown   int      `json:"heal_cooldown"`    // seconds, default 300

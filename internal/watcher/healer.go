@@ -34,6 +34,12 @@ type Healer struct {
 	// Keyed by service name. Reset when a healthy event is received.
 	restartCounts   map[string]int
 	restartCountsMu sync.Mutex
+
+	// exhausted tracks services where max restarts have been reached.
+	// Suppresses repeated log messages for subsequent unhealthy events.
+	// Cleared when a healthy event is received.
+	exhausted   map[string]bool
+	exhaustedMu sync.Mutex
 }
 
 // NewHealer creates a health monitor.
@@ -47,6 +53,7 @@ func NewHealer(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatc
 		cooldowns:     make(map[string]time.Time),
 		degraded:      make(map[string]bool),
 		restartCounts: make(map[string]int),
+		exhausted:     make(map[string]bool),
 	}
 }
 
@@ -114,7 +121,13 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 	count := h.restartCounts[svc.Name]
 	h.restartCountsMu.Unlock()
 	if count >= svc.HealMaxRestarts {
-		log.Printf("[healer] %s: max restarts (%d) reached, giving up", svc.Name, svc.HealMaxRestarts)
+		h.exhaustedMu.Lock()
+		alreadyExhausted := h.exhausted[svc.Name]
+		h.exhausted[svc.Name] = true
+		h.exhaustedMu.Unlock()
+		if !alreadyExhausted {
+			log.Printf("[healer] %s: max restarts (%d) reached, manual intervention required", svc.Name, svc.HealMaxRestarts)
+		}
 		return
 	}
 
@@ -210,6 +223,9 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 	h.restartCountsMu.Lock()
 	delete(h.restartCounts, svc.Name)
 	h.restartCountsMu.Unlock()
+	h.exhaustedMu.Lock()
+	delete(h.exhausted, svc.Name)
+	h.exhaustedMu.Unlock()
 	h.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
 		Event:     "restarted",
@@ -236,6 +252,9 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 		h.restartCountsMu.Lock()
 		delete(h.restartCounts, svc.Name)
 		h.restartCountsMu.Unlock()
+		h.exhaustedMu.Lock()
+		delete(h.exhausted, svc.Name)
+		h.exhaustedMu.Unlock()
 	}
 
 	// Skip notification if the updater is mid-deploy — it sends its own success alert.
@@ -262,6 +281,12 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerName string) {
 	// Skip if in deploy grace period (expected during updates).
 	if h.updater.IsDeploying(svc.Name) {
+		return
+	}
+
+	// Already degraded from a previous die/unhealthy event. Suppress to
+	// avoid log and notification spam during restart loops.
+	if h.isDegraded(svc.Name) {
 		return
 	}
 
@@ -318,4 +343,37 @@ func (h *Healer) isDegraded(serviceName string) bool {
 	h.degradedMu.Lock()
 	defer h.degradedMu.Unlock()
 	return h.degraded[serviceName]
+}
+
+// DegradedServices returns service names currently in a degraded state.
+func (h *Healer) DegradedServices() map[string]bool {
+	h.degradedMu.Lock()
+	defer h.degradedMu.Unlock()
+	result := make(map[string]bool, len(h.degraded))
+	for k, v := range h.degraded {
+		result[k] = v
+	}
+	return result
+}
+
+// ExhaustedServices returns service names that hit max restart attempts.
+func (h *Healer) ExhaustedServices() map[string]bool {
+	h.exhaustedMu.Lock()
+	defer h.exhaustedMu.Unlock()
+	result := make(map[string]bool, len(h.exhausted))
+	for k, v := range h.exhausted {
+		result[k] = v
+	}
+	return result
+}
+
+// RestartCounts returns consecutive failed restart counts per service.
+func (h *Healer) RestartCounts() map[string]int {
+	h.restartCountsMu.Lock()
+	defer h.restartCountsMu.Unlock()
+	result := make(map[string]int, len(h.restartCounts))
+	for k, v := range h.restartCounts {
+		result[k] = v
+	}
+	return result
 }

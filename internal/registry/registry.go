@@ -38,8 +38,14 @@ func (c *Client) RemoteDigest(ctx context.Context, image string) (string, error)
 		return "", fmt.Errorf("create request: %w", err)
 	}
 
-	// Must send this Accept header to get the v2 manifest digest.
-	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+	// Accept both Docker v2 and OCI manifest types so the registry
+	// can return whichever format the image was pushed with.
+	req.Header.Set("Accept", strings.Join([]string{
+		"application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+	}, ", "))
 
 	resp, err := c.http.Do(req) // #nosec G704 -- localhost registry only
 	if err != nil {

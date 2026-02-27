@@ -21,6 +21,9 @@ The dockward API binds exclusively to `127.0.0.1:<port>`. The default port is `9
 | `GET` | `/blocked` | List services with a blocked digest |
 | `DELETE` | `/blocked/<name>` | Unblock a service, allowing the next poll to attempt a deploy |
 | `GET` | `/not-found` | List services with an unresolvable local digest |
+| `GET` | `/errored` | List services with a persistent poll error |
+| `GET` | `/status` | Aggregated state for all configured services |
+| `GET` | `/status/<name>` | Aggregated state for a single service |
 | `GET` | `/health` | Liveness check |
 | `GET` | `/metrics` | Prometheus text format metrics |
 
@@ -118,6 +121,70 @@ Example response:
 ```json
 ["myapp"]
 ```
+
+---
+
+## GET /errored
+
+Returns the list of services with a persistent poll error (e.g. registry unreachable, compose network not found). Dockward sends a notification on the first occurrence and suppresses repeats until the error changes or resolves.
+
+```sh
+curl -s localhost:9090/errored
+```
+
+Example response:
+
+```json
+{"myapp":"remote digest: HEAD http://localhost:5000/v2/myapp/manifests/latest: dial tcp 127.0.0.1:5000: connect: connection refused"}
+```
+
+Empty object when no services are errored:
+
+```json
+{}
+```
+
+---
+
+## GET /status
+
+Returns the aggregated state for all configured services. This is the single endpoint to check what dockward sees across updater and healer.
+
+```sh
+curl -s localhost:9090/status
+```
+
+Example response:
+
+```json
+[
+  {
+    "name": "myapp",
+    "auto_update": true,
+    "auto_start": false,
+    "auto_heal": true,
+    "healthy": true,
+    "deploying": false,
+    "degraded": false,
+    "exhausted": false,
+    "restart_failures": 0
+  }
+]
+```
+
+Fields with error details (`blocked`, `not_found`, `errored`) are omitted when empty.
+
+---
+
+## GET /status/`<name>`
+
+Returns the aggregated state for a single service.
+
+```sh
+curl -s localhost:9090/status/myapp
+```
+
+Returns `404 Not Found` if the service name is not in the config.
 
 ---
 
