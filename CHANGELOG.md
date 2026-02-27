@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-27
+
+### Added
+- Central warden mode: aggregates audit entries from multiple dockward agents via HTTP push
+- `--mode agent|warden` flag; agent mode is the default (backward compatible)
+- Agent push config block (`push.warden_url`, `push.token`, `push.machine_id`): when `warden_url` is set, every audit entry is forwarded to the warden asynchronously
+- `internal/push` package: HTTP client that POSTs audit entries to warden `/ingest`
+- `audit.Pusher` interface and `Logger.WithPush` to decouple push client from audit package (avoids circular import)
+- Warden HTTP server with four endpoints: `POST /ingest`, `GET /events` (SSE), `GET /` (dashboard), `GET /health`
+- SSE hub: fan-out broadcaster; replays last 50 events on new connection
+- In-memory ring buffer (200 events) with per-agent connectivity state
+- Heartbeat poller: polls each agent `GET /health` every 30 s; emits `agent_online` / `agent_offline` synthetic entries on state transitions
+- Multi-machine dashboard: per-agent status cards, real-time SSE event feed, machine and level filters (vanilla JS, no dependencies)
+- `warden.sample.json`: sample warden config
+- `docs/02-reference/05-warden.md`: warden reference
+- `docs/03-guides/06-warden-setup.md`: warden setup guide
+
+## [0.4.0] - 2026-02-27
+
+### Added
+- Audit log: structured JSON Lines file (`audit.path` config field) recording deploy, rollback, heal, and resource alert events
+- `GET /audit` API endpoint returning the last 100 audit entries as JSON
+- Compose file watcher: re-deploys a service when its compose file content changes without pulling a new image (`compose_watch: true`)
+- Resource alerts: configurable CPU and memory thresholds per service (`cpu_threshold`, `memory_threshold`); sends notifications when exceeded
+- Web UI dashboard: served at `GET /` on the API port; shows service status, last event, and audit log; auto-refreshes every 30 s
+- Interactive config wizard: `dockward config [--config <path>]` subcommand to create or edit config files interactively
+- `GET /status` endpoint: unified status response with per-service health, deploy state, and resource metrics
+
+### Fixed
+- Audit entries now written on rollback failure paths (previously missing)
+
 ## [0.3.0] - 2026-02-26
 
 ### Added
@@ -71,7 +102,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd service unit
 - Version flag (`-version`) with build-time injection via ldflags
 
-[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/studiowebux/dockward/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/studiowebux/dockward/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/studiowebux/dockward/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/studiowebux/dockward/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/studiowebux/dockward/compare/v0.2.0...v0.2.1

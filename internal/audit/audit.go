@@ -6,8 +6,10 @@ package audit
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -27,11 +29,28 @@ type Entry struct {
 	Reason    string    `json:"reason,omitempty"`
 }
 
+// Pusher forwards audit entries to a remote warden.
+// Implemented by push.Client. Defined here to avoid an import cycle.
+type Pusher interface {
+	Send(ctx context.Context, e Entry) error
+}
+
 // Logger appends Entry values to a JSON Lines file.
 // A nil or zero-value Logger is safe to use — all operations are no-ops.
 type Logger struct {
 	mu   sync.Mutex
 	file *os.File // nil when disabled
+	push Pusher   // nil when push is disabled
+}
+
+// WithPush attaches a Pusher to the logger. Returns the same logger (fluent).
+// Safe to call on a nil logger (returns nil).
+func (l *Logger) WithPush(p Pusher) *Logger {
+	if l == nil {
+		return nil
+	}
+	l.push = p
+	return l
 }
 
 // New opens (or creates) the audit log file at path.
@@ -61,9 +80,24 @@ func (l *Logger) Write(e Entry) error {
 		return fmt.Errorf("marshal audit entry: %w", err)
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	_, err = fmt.Fprintf(l.file, "%s\n", data)
-	return err
+	p := l.push
+	l.mu.Unlock()
+
+	if err != nil {
+		return err
+	}
+
+	// Fire-and-forget push to warden.
+	if p != nil {
+		go func() {
+			if sendErr := p.Send(context.Background(), e); sendErr != nil {
+				log.Printf("[audit] push to warden failed: %v", sendErr)
+			}
+		}()
+	}
+
+	return nil
 }
 
 // Recent reads the last n entries from the log file.

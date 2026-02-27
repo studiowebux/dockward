@@ -1,0 +1,18 @@
+{
+  "api": {
+    "port": "8080",
+    "token": "$DOCKWARD_WARDEN_TOKEN"
+  },
+  "agents": [
+    {
+      "id": "ovh-01",
+      "url": "http://ovh-01.internal:9090",
+      "token": "$DOCKWARD_AGENT_TOKEN_OVH01"
+    },
+    {
+      "id": "ovh-02",
+      "url": "http://ovh-02.internal:9090",
+      "token": "$DOCKWARD_AGENT_TOKEN_OVH02"
+    }
+  ]
+}

@@ -31,6 +31,11 @@
   "audit": {
     "path": "/var/log/dockward/audit.jsonl"
   },
+  "push": {
+    "warden_url": "",
+    "token": "$DOCKWARD_PUSH_TOKEN",
+    "machine_id": "ovh-01"
+  },
   "services": [
     {
       "name": "minimaldoc",
