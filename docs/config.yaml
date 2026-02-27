@@ -1,0 +1,33 @@
+title: Dockward
+description: Docker deploy guard — polls a local registry for image changes, auto-deploys via docker compose with rollback, blocks bad digests, and auto-heals unhealthy containers.
+baseUrl: /dockward
+nav:
+  - title: Getting Started
+    path: 01-getting-started/
+    children:
+      - title: Installation
+        path: 01-getting-started/01-installation.md
+      - title: Configuration
+        path: 01-getting-started/02-configuration.md
+      - title: GitHub Actions
+        path: 01-getting-started/03-github-actions.md
+  - title: Reference
+    path: 02-reference/
+    children:
+      - title: Config Reference
+        path: 02-reference/01-config.md
+      - title: API
+        path: 02-reference/02-api.md
+      - title: Metrics
+        path: 02-reference/03-metrics.md
+      - title: Notifications
+        path: 02-reference/04-notifications.md
+  - title: Guides
+    path: 03-guides/
+    children:
+      - title: Full Mode
+        path: 03-guides/01-full-mode.md
+      - title: Heal-Only Mode
+        path: 03-guides/02-heal-only-mode.md
+      - title: Rollback
+        path: 03-guides/03-rollback.md

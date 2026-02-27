@@ -197,7 +197,19 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 	}
 
 	h.metrics.IncRestarts(svc.Name)
+
+	// handleHealthy may have already sent the recovery notification and cleared
+	// degraded state if the healthy event arrived before this goroutine ran.
+	if !h.isDegraded(svc.Name) {
+		log.Printf("[healer] %s: recovery already handled by healthy event", svc.Name)
+		return
+	}
+
 	h.metrics.SetHealthy(svc.Name, true)
+	h.setDegraded(svc.Name, false)
+	h.restartCountsMu.Lock()
+	delete(h.restartCounts, svc.Name)
+	h.restartCountsMu.Unlock()
 	h.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
 		Event:     "restarted",
@@ -209,18 +221,28 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 }
 
 func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, containerName string) {
-	// Skip if in deploy grace period (updater sends its own success notification).
-	if h.updater.IsDeploying(svc.Name) {
-		log.Printf("[healer] %s: healthy during deploy, skipping (updater handles notification)", svc.Name)
-		return
-	}
-
-	// Check if the service was in a degraded state (died, unhealthy, or healer-restarted).
 	h.cooldownsMu.Lock()
 	_, wasCooling := h.cooldowns[containerName]
+	// Consume the cooldown entry so subsequent healthy events don't re-fire the alert.
+	delete(h.cooldowns, containerName)
 	h.cooldownsMu.Unlock()
 
 	wasDegraded := h.isDegraded(svc.Name)
+
+	// Always clear degraded state on healthy — regardless of whether a deploy is running.
+	// This ensures the flag doesn't get stuck when IsDeploying races with a die→recover cycle.
+	if wasDegraded {
+		h.setDegraded(svc.Name, false)
+		h.restartCountsMu.Lock()
+		delete(h.restartCounts, svc.Name)
+		h.restartCountsMu.Unlock()
+	}
+
+	// Skip notification if the updater is mid-deploy — it sends its own success alert.
+	if h.updater.IsDeploying(svc.Name) {
+		log.Printf("[healer] %s: healthy during deploy, skipping notification (updater handles it)", svc.Name)
+		return
+	}
 
 	if !wasCooling && !wasDegraded {
 		return
@@ -228,12 +250,6 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 
 	log.Printf("[healer] %s: recovered (healthy)", svc.Name)
 	h.metrics.SetHealthy(svc.Name, true)
-	h.setDegraded(svc.Name, false)
-
-	// Reset consecutive restart failure counter.
-	h.restartCountsMu.Lock()
-	delete(h.restartCounts, svc.Name)
-	h.restartCountsMu.Unlock()
 	h.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
 		Event:     "healthy",
