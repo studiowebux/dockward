@@ -77,7 +77,7 @@ func main() {
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
 	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
-	api := watcher.NewAPI(updater, healer, metrics, monitor, cfg.API.Port)
+	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, cfg.API.Port)
 
 	// Context with signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
