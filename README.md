@@ -16,20 +16,6 @@ Two operational modes:
 1. **Full mode**: registry polling + auto-deploy with rollback + auto-heal. Requires a local Docker registry and docker compose.
 2. **Heal-only mode**: healthcheck monitoring + auto-restart. Works with any container (compose-managed or standalone `docker run`). No registry or compose files needed.
 
-Features:
-
-- Registry polling: compares remote vs local image digests, pulls and redeploys on change
-- Rollback: tags current image as `:rollback` before deploy, reverts if container is unhealthy or not running after grace period. Blocks the bad digest to prevent infinite rollback loops.
-- Atomic deploys: concurrent deploy guard prevents poll/API race conditions
-- Container matching: `com.docker.compose.project` label for compose containers, `container_name` for standalone containers
-- Health polling: polls container health every 5s during grace period (fail fast on unhealthy, keep waiting on starting)
-- Auto-heal: listens for Docker health events, restarts unhealthy containers with cooldown and max retry protection
-- Notifications: Discord webhook, SMTP email, custom webhooks with Go `text/template` body
-- Prometheus metrics: `/metrics` endpoint with update/rollback/restart/failure/blocked counters per service
-- Trigger API: `POST /trigger` and `POST /trigger/<service>` for manual deploys
-- Blocked digest API: `GET /blocked` and `DELETE /blocked/<service>` for managing blocked digests
-- Systemd integration: runs as a system service, logs to journal
-
 ## Installation
 
 Build from source (requires Go 1.24+):
@@ -52,13 +38,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dockward
 ```
 
-Verify:
-
-```sh
-dockward -version
-systemctl status dockward
-journalctl -u dockward -f
-```
+Full installation guide: [docs/01-getting-started/01-installation.md](docs/01-getting-started/01-installation.md)
 
 ## Usage
 
@@ -69,8 +49,6 @@ dockward -config /etc/dockward/config.json
 ## Getting Started
 
 ### Heal-only mode (standalone container)
-
-Monitor a standalone container by name and auto-restart on unhealthy:
 
 ```json
 {
@@ -86,11 +64,7 @@ Monitor a standalone container by name and auto-restart on unhealthy:
 }
 ```
 
-No registry, compose file, or compose project required. Dockward matches Docker events by container name and restarts the container when it becomes unhealthy. After 5 consecutive failed restarts, it stops retrying and sends a critical notification.
-
 ### Full mode (registry + compose)
-
-Poll a local registry for image updates, auto-deploy, and auto-heal:
 
 ```json
 {
@@ -98,80 +72,22 @@ Poll a local registry for image updates, auto-deploy, and auto-heal:
     "url": "http://localhost:5000",
     "poll_interval": 300
   },
-  "notifications": {
-    "discord": {
-      "webhook_url": "https://discord.com/api/webhooks/ID/TOKEN"
-    }
-  },
   "services": [
     {
       "name": "myapp",
       "image": "myapp:latest",
-      "compose_file": "/srv/myapp/docker-compose.yml",
+      "compose_files": [
+        "/srv/myapp/docker-compose.yml"
+      ],
       "compose_project": "myapp",
       "auto_update": true,
-      "auto_heal": true,
-      "health_grace": 60,
-      "heal_cooldown": 300
+      "auto_heal": true
     }
   ]
 }
 ```
 
-## Configuration
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `registry.url` | Local registry address | `http://localhost:5000` |
-| `registry.poll_interval` | Seconds between polls | `300` |
-| `api.port` | API listen port (localhost only) | `9090` |
-| `services[].name` | Service identifier | required |
-| `services[].image` | Registry image reference | required if `auto_update` |
-| `services[].compose_file` | Absolute path to docker-compose.yml | required if `auto_update` |
-| `services[].compose_project` | Docker Compose project name | required if `auto_update` |
-| `services[].container_name` | Container name for event matching (standalone containers) | optional |
-| `services[].auto_update` | Enable registry polling for this service | `false` |
-| `services[].auto_heal` | Enable auto-restart on unhealthy | `false` |
-| `services[].health_grace` | Seconds to wait after deploy before health check | `60` |
-| `services[].heal_cooldown` | Minimum seconds between auto-restarts | `300` |
-| `services[].heal_max_restarts` | Max consecutive failed restarts before giving up | `3` |
-
-When `auto_heal` is true, at least one of `compose_project` or `container_name` is required for event matching.
-
-### Notifications
-
-Discord: set `webhook_url` to a Discord channel webhook URL.
-
-SMTP: set `host`, `port`, `from`, `to`, and optionally `username`/`password`.
-
-Custom webhooks: define a `name`, `url`, `method`, `headers`, and `body` (Go template with `.Service`, `.Event`, `.Message`, `.Reason`, `.Level` fields). Headers support `$ENV_VAR` expansion.
-
-## API
-
-All endpoints listen on `127.0.0.1:<port>` only.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/trigger` | Trigger poll for all services |
-| `POST` | `/trigger/<name>` | Trigger poll for a specific service |
-| `GET` | `/blocked` | List blocked service digests |
-| `DELETE` | `/blocked/<name>` | Unblock a service (allows next deploy attempt) |
-| `GET` | `/health` | Health check (`{"status":"ok"}`) |
-| `GET` | `/metrics` | Prometheus text format metrics |
-
-## Metrics
-
-Exposed at `/metrics` in Prometheus text exposition format:
-
-- `watcher_updates_total{service}` - successful image updates
-- `watcher_rollbacks_total{service}` - rollbacks after failed updates
-- `watcher_restarts_total{service}` - auto-heal restarts
-- `watcher_failures_total{service}` - critical failures
-- `watcher_service_healthy{service}` - 1 if healthy, 0 if not
-- `watcher_service_blocked{service}` - 1 if digest blocked after rollback, 0 if not
-- `watcher_poll_count_total` - total poll cycles
-- `watcher_last_poll_timestamp_seconds` - unix timestamp of last poll
-- `watcher_uptime_seconds` - seconds since start
+Full documentation: [docs/](docs/)
 
 ## Contributions
 
