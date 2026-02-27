@@ -148,9 +148,20 @@ func (a *API) handleListErrored(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, a.updater.ErroredServices())
 }
 
-// serviceStatus is the per-service state returned by /status.
+// statusResponse is the top-level wrapper returned by GET /status.
+type statusResponse struct {
+	UptimeSeconds int64           `json:"uptime_seconds"`
+	LastPoll      *time.Time      `json:"last_poll,omitempty"`
+	PollCount     int64           `json:"poll_count"`
+	Services      []serviceStatus `json:"services"`
+}
+
+// serviceStatus is the per-service state returned by /status and /status/<name>.
+// Status is a synthesized single-word summary; the individual flag fields remain
+// for programmatic consumers that need granular state.
 type serviceStatus struct {
 	Name       string `json:"name"`
+	Status     string `json:"status"` // ok | deploying | degraded | exhausted | blocked | not_found | errored | unhealthy | unknown
 	AutoUpdate bool   `json:"auto_update"`
 	AutoStart  bool   `json:"auto_start"`
 	AutoHeal   bool   `json:"auto_heal"`
@@ -162,6 +173,11 @@ type serviceStatus struct {
 	Degraded   bool   `json:"degraded"`
 	Exhausted  bool   `json:"exhausted"`
 	Restarts   int    `json:"restart_failures"`
+	// Cumulative counters since process start.
+	UpdatesTotal   int64 `json:"updates_total"`
+	RollbacksTotal int64 `json:"rollbacks_total"`
+	RestartsTotal  int64 `json:"restarts_total"`
+	FailuresTotal  int64 `json:"failures_total"`
 }
 
 // GET /status - aggregated state for all configured services
@@ -172,12 +188,24 @@ func (a *API) handleStatusAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snap := a.stateSnapshot()
+	meta := a.metrics.Meta()
+
 	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
 	for _, svc := range a.updater.cfg.Services {
 		services = append(services, a.buildServiceStatus(svc, snap))
 	}
 
-	writeJSON(w, services)
+	resp := statusResponse{
+		UptimeSeconds: meta.UptimeSeconds,
+		PollCount:     meta.PollCount,
+		Services:      services,
+	}
+	if !meta.LastPoll.IsZero() {
+		t := meta.LastPoll
+		resp.LastPoll = &t
+	}
+
+	writeJSON(w, resp)
 }
 
 // GET /status/<name> - aggregated state for a single service
@@ -213,6 +241,7 @@ type stateSnap struct {
 	exhausted     map[string]bool
 	restartCounts map[string]int
 	healthGauges  map[string]bool
+	counters      map[string]ServiceCounters
 }
 
 func (a *API) stateSnapshot() stateSnap {
@@ -224,6 +253,7 @@ func (a *API) stateSnapshot() stateSnap {
 		exhausted:     a.healer.ExhaustedServices(),
 		restartCounts: a.healer.RestartCounts(),
 		healthGauges:  a.metrics.HealthSnapshot(),
+		counters:      a.metrics.CountersSnapshot(),
 	}
 }
 
@@ -244,7 +274,39 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 	if h, ok := snap.healthGauges[svc.Name]; ok {
 		s.Healthy = &h
 	}
+	if c, ok := snap.counters[svc.Name]; ok {
+		s.UpdatesTotal   = c.Updates
+		s.RollbacksTotal = c.Rollbacks
+		s.RestartsTotal  = c.Restarts
+		s.FailuresTotal  = c.Failures
+	}
+	s.Status = synthesizeStatus(s)
 	return s
+}
+
+// synthesizeStatus derives a single human-readable status word from service state.
+// Priority order: exhausted > degraded > errored > blocked > not_found > deploying > ok/unhealthy/unknown.
+func synthesizeStatus(s serviceStatus) string {
+	switch {
+	case s.Exhausted:
+		return "exhausted"
+	case s.Degraded:
+		return "degraded"
+	case s.Errored != "":
+		return "errored"
+	case s.Blocked != "":
+		return "blocked"
+	case s.NotFound != "":
+		return "not_found"
+	case s.Deploying:
+		return "deploying"
+	case s.Healthy != nil && *s.Healthy:
+		return "ok"
+	case s.Healthy != nil && !*s.Healthy:
+		return "unhealthy"
+	default:
+		return "unknown"
+	}
 }
 
 // DELETE /blocked/<service> - unblock a service

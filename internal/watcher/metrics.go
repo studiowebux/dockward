@@ -92,6 +92,61 @@ func (m *Metrics) HealthSnapshot() map[string]bool {
 	return result
 }
 
+// ServiceCounters holds cumulative event counts for a single service.
+type ServiceCounters struct {
+	Updates   int64
+	Rollbacks int64
+	Restarts  int64
+	Failures  int64
+}
+
+// CountersSnapshot returns a copy of per-service cumulative counters.
+func (m *Metrics) CountersSnapshot() map[string]ServiceCounters {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	services := make(map[string]struct{})
+	for k := range m.updates {
+		services[k] = struct{}{}
+	}
+	for k := range m.rollbacks {
+		services[k] = struct{}{}
+	}
+	for k := range m.restarts {
+		services[k] = struct{}{}
+	}
+	for k := range m.failures {
+		services[k] = struct{}{}
+	}
+	result := make(map[string]ServiceCounters, len(services))
+	for svc := range services {
+		result[svc] = ServiceCounters{
+			Updates:   m.updates[svc],
+			Rollbacks: m.rollbacks[svc],
+			Restarts:  m.restarts[svc],
+			Failures:  m.failures[svc],
+		}
+	}
+	return result
+}
+
+// Meta holds global watcher metadata for the status endpoint.
+type Meta struct {
+	UptimeSeconds int64
+	LastPoll      time.Time
+	PollCount     int64
+}
+
+// Meta returns a point-in-time snapshot of watcher uptime and poll counters.
+func (m *Metrics) Meta() Meta {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return Meta{
+		UptimeSeconds: int64(time.Since(m.startTime).Seconds()),
+		LastPoll:      m.lastPollTime,
+		PollCount:     m.pollCount,
+	}
+}
+
 // Prometheus returns metrics in Prometheus text exposition format.
 func (m *Metrics) Prometheus() string {
 	m.mu.RLock()

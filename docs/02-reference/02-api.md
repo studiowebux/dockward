@@ -148,7 +148,7 @@ Empty object when no services are errored:
 
 ## GET /status
 
-Returns the aggregated state for all configured services. This is the single endpoint to check what dockward sees across updater and healer.
+Returns the aggregated state for all configured services, plus watcher-level metadata.
 
 ```sh
 curl -s localhost:9090/status
@@ -157,28 +157,53 @@ curl -s localhost:9090/status
 Example response:
 
 ```json
-[
-  {
-    "name": "myapp",
-    "auto_update": true,
-    "auto_start": false,
-    "auto_heal": true,
-    "healthy": true,
-    "deploying": false,
-    "degraded": false,
-    "exhausted": false,
-    "restart_failures": 0
-  }
-]
+{
+  "uptime_seconds": 86400,
+  "last_poll": "2026-02-27T10:30:00Z",
+  "poll_count": 288,
+  "services": [
+    {
+      "name": "myapp",
+      "status": "ok",
+      "auto_update": true,
+      "auto_start": false,
+      "auto_heal": true,
+      "healthy": true,
+      "deploying": false,
+      "degraded": false,
+      "exhausted": false,
+      "restart_failures": 0,
+      "updates_total": 5,
+      "rollbacks_total": 0,
+      "restarts_total": 1,
+      "failures_total": 0
+    }
+  ]
+}
 ```
 
+**`status` values** (priority-ordered; only the highest applies):
+
+| Value | Meaning |
+|-------|---------|
+| `exhausted` | Max restart attempts reached, manual intervention required |
+| `degraded` | Healer detected a die/unhealthy event, attempting recovery |
+| `errored` | Persistent poll error (registry unreachable, compose failure, etc.) |
+| `blocked` | Digest blocked after a rollback; will retry when remote digest changes |
+| `not_found` | Local image not found; suppressed until remote digest changes |
+| `deploying` | Image update in progress |
+| `ok` | Running and healthy |
+| `unhealthy` | Health gauge reports unhealthy, no active recovery |
+| `unknown` | No health data yet (service just started or healer hasn't received an event) |
+
 Fields with error details (`blocked`, `not_found`, `errored`) are omitted when empty.
+`last_poll` is omitted until the first poll cycle completes.
 
 ---
 
 ## GET /status/`<name>`
 
-Returns the aggregated state for a single service.
+Returns the aggregated state for a single service (same shape as an entry in `services` above, not the wrapper object).
 
 ```sh
 curl -s localhost:9090/status/myapp
