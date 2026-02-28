@@ -3,6 +3,9 @@ package watcher
 import (
 	"testing"
 	"time"
+
+	"github.com/studiowebux/dockward/internal/config"
+	"github.com/studiowebux/dockward/internal/docker"
 )
 
 func TestHealer_CooldownPreventsDoubleRestart(t *testing.T) {
@@ -103,5 +106,30 @@ func TestHealer_ExhaustedServicesSnapshot(t *testing.T) {
 	}
 	if snap["svc-b"] {
 		t.Error("svc-b should not appear in exhausted snapshot")
+	}
+}
+
+func TestHealer_SilentServiceIgnoredByFindServiceByEvent(t *testing.T) {
+	cfg := &config.Config{
+		Services: []config.Service{
+			{
+				Name:           "silent-svc",
+				Silent:         true,
+				ComposeProject: "myproject",
+			},
+		},
+	}
+	h := &Healer{cfg: cfg}
+
+	event := docker.Event{
+		Actor: docker.EventActor{
+			Attributes: map[string]string{
+				"com.docker.compose.project": "myproject",
+			},
+		},
+	}
+
+	if svc := h.findServiceByEvent(event); svc != nil {
+		t.Errorf("silent service should be ignored by findServiceByEvent, got %q", svc.Name)
 	}
 }

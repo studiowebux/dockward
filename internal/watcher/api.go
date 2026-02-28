@@ -205,6 +205,14 @@ type statusResponse struct {
 	Services      []serviceStatus `json:"services"`
 }
 
+// ContainerInfo holds the live state of a single container for UI display.
+type ContainerInfo struct {
+	Name   string `json:"name"`
+	State  string `json:"state"`
+	Status string `json:"status"`
+	Image  string `json:"image"`
+}
+
 // serviceStatus is the per-service state returned by /status and /status/<name>.
 // Status is a synthesized single-word summary; the individual flag fields remain
 // for programmatic consumers that need granular state.
@@ -228,9 +236,10 @@ type serviceStatus struct {
 	RestartsTotal  int64 `json:"restarts_total"`
 	FailuresTotal  int64 `json:"failures_total"`
 	// Deployed image info — populated each poll cycle.
-	Image           string `json:"image,omitempty"`
-	ImageDigest     string `json:"image_digest,omitempty"`
-	ContainerUptime string `json:"container_uptime,omitempty"`
+	Image       string `json:"image,omitempty"`
+	ImageDigest string `json:"image_digest,omitempty"`
+	// Live containers for this compose project.
+	Containers []ContainerInfo `json:"containers,omitempty"`
 	// Resource usage — populated each monitor poll cycle for all running containers.
 	HasStats      bool    `json:"has_stats"`
 	CPUPercent    float64 `json:"cpu_percent,omitempty"`
@@ -246,7 +255,7 @@ func (a *API) handleStatusAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snap := a.stateSnapshot()
+	snap := a.stateSnapshot(r.Context())
 	meta := a.metrics.Meta()
 
 	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
@@ -280,7 +289,7 @@ func (a *API) handleStatusService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snap := a.stateSnapshot()
+	snap := a.stateSnapshot(r.Context())
 	for _, svc := range a.updater.cfg.Services {
 		if svc.Name == serviceName {
 			writeJSON(w, a.buildServiceStatus(svc, snap))
@@ -303,9 +312,10 @@ type stateSnap struct {
 	counters      map[string]ServiceCounters
 	stats         map[string]ServiceStats
 	deployed      map[string]DeployedInfo
+	containers    map[string][]ContainerInfo
 }
 
-func (a *API) stateSnapshot() stateSnap {
+func (a *API) stateSnapshot(ctx context.Context) stateSnap {
 	snap := stateSnap{
 		blocked:       a.updater.BlockedDigests(),
 		notFound:      a.updater.NotFoundServices(),
@@ -320,18 +330,41 @@ func (a *API) stateSnapshot() stateSnap {
 		snap.stats = a.monitor.StatsSnapshot()
 	}
 	snap.deployed = a.updater.DeployedInfos()
+
+	containers := make(map[string][]ContainerInfo)
+	for _, svc := range a.updater.cfg.Services {
+		if svc.Silent || svc.ComposeProject == "" {
+			continue
+		}
+		if ci := a.updater.serviceContainerInfos(ctx, svc.ComposeProject); len(ci) > 0 {
+			containers[svc.Name] = ci
+		}
+	}
+	snap.containers = containers
+
 	return snap
 }
 
+// firstValueByPrefix returns the first map value whose key has the given prefix.
+func firstValueByPrefix(m map[string]string, prefix string) string {
+	for k, v := range m {
+		if strings.HasPrefix(k, prefix) {
+			return v
+		}
+	}
+	return ""
+}
+
 func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStatus {
+	prefix := svc.Name + "/"
 	s := serviceStatus{
 		Name:       svc.Name,
 		AutoUpdate: svc.AutoUpdate,
 		AutoStart:  svc.AutoStart,
 		AutoHeal:   svc.AutoHeal,
 		Deploying:  a.updater.IsDeploying(svc.Name),
-		Blocked:    snap.blocked[svc.Name],
-		NotFound:   snap.notFound[svc.Name],
+		Blocked:    firstValueByPrefix(snap.blocked, prefix),
+		NotFound:   firstValueByPrefix(snap.notFound, prefix),
 		Errored:    snap.errored[svc.Name],
 		Degraded:   snap.degraded[svc.Name],
 		Exhausted:  snap.exhausted[svc.Name],
@@ -353,11 +386,14 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 		s.MemoryUsageMB = st.MemoryUsageMB
 		s.MemoryLimitMB = st.MemoryLimitMB
 	}
-	if d, ok := snap.deployed[svc.Name]; ok {
-		s.Image          = d.Image
-		s.ImageDigest    = shortDigest(d.Digest)
-		s.ContainerUptime = d.Uptime
+	for k, d := range snap.deployed {
+		if strings.HasPrefix(k, prefix) {
+			s.Image      = d.Image
+			s.ImageDigest = shortDigest(d.Digest)
+			break
+		}
 	}
+	s.Containers = snap.containers[svc.Name]
 	s.Status = synthesizeStatus(s)
 	return s
 }
@@ -536,7 +572,7 @@ func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snap := a.stateSnapshot()
+	snap := a.stateSnapshot(r.Context())
 	meta := a.metrics.Meta()
 
 	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
@@ -655,15 +691,26 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
 
 <h2>Services</h2>
 <table>
-<thead><tr><th>Name</th><th>Status</th><th>Image</th><th>Digest</th><th>Uptime</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
+<thead><tr><th>Name</th><th>Status</th><th>Image</th><th>Digest</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
 <tbody id="status-body">
 {{range .Services}}
 <tr>
-  <td>{{.Name}}</td>
+  <td>
+    {{.Name}}
+    {{if .Containers}}
+    <details style="margin-top:3px">
+      <summary style="cursor:pointer;color:var(--text-muted);font-size:11px">{{len .Containers}} container(s)</summary>
+      <table style="margin-top:4px;width:100%;font-size:11px">
+        {{range .Containers}}
+        <tr><td style="color:var(--text-muted);padding:1px 0">{{.Name}}</td><td style="padding:1px 8px">{{.State}}</td><td style="color:var(--text-muted);padding:1px 0">{{.Status}}</td></tr>
+        {{end}}
+      </table>
+    </details>
+    {{end}}
+  </td>
   <td class="{{.Status}}">{{.Status}}</td>
   <td style="color:var(--text-muted)">{{if .Image}}{{.Image}}{{else}}--{{end}}</td>
   <td style="color:var(--text-muted)">{{if .ImageDigest}}{{.ImageDigest}}{{else}}--{{end}}</td>
-  <td style="color:var(--text-muted)">{{if .ContainerUptime}}{{.ContainerUptime}}{{else}}--{{end}}</td>
   <td>{{if .HasStats}}{{printf "%.0f" .CPUPercent}}% / {{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
   <td>{{.UpdatesTotal}}</td>
   <td>{{.RollbacksTotal}}</td>
@@ -742,12 +789,20 @@ function refreshStatus(){
       var cpu=s.has_stats?Math.round(s.cpu_percent)+'% / '+Math.round(s.memory_percent)+'%':'--';
       var actions='<button onclick="triggerService(\''+esc(s.name)+'\')">Trigger</button>';
       if(s.blocked){actions+=' <button onclick="unblockService(\''+esc(s.name)+'\')">Unblock</button>';}
+      var nameCell=esc(s.name);
+      if(s.containers&&s.containers.length){
+        var crows='';
+        for(var j=0;j<s.containers.length;j++){
+          var c=s.containers[j];
+          crows+='<tr><td style="color:var(--text-muted);padding:1px 0">'+esc(c.name||'')+'</td><td style="padding:1px 8px">'+esc(c.state||'')+'</td><td style="color:var(--text-muted);padding:1px 0">'+esc(c.status||'')+'</td></tr>';
+        }
+        nameCell+='\n<details style="margin-top:3px"><summary style="cursor:pointer;color:var(--text-muted);font-size:11px">'+s.containers.length+' container(s)</summary><table style="margin-top:4px;width:100%;font-size:11px">'+crows+'</table></details>';
+      }
       rows+='<tr>'+
-        '<td>'+esc(s.name)+'</td>'+
+        '<td>'+nameCell+'</td>'+
         '<td class="'+esc(s.status)+'">'+esc(s.status)+'</td>'+
         '<td style="color:var(--text-muted)">'+(s.image?esc(s.image):'--')+'</td>'+
         '<td style="color:var(--text-muted)">'+(s.image_digest?esc(s.image_digest):'--')+'</td>'+
-        '<td style="color:var(--text-muted)">'+(s.container_uptime?esc(s.container_uptime):'--')+'</td>'+
         '<td>'+esc(cpu)+'</td>'+
         '<td>'+(s.updates_total||0)+'</td>'+
         '<td>'+(s.rollbacks_total||0)+'</td>'+

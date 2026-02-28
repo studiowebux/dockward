@@ -33,7 +33,7 @@ For configuration fields see [Config Reference](../02-reference/01-config.md). F
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
       "compose_files": [
         "/srv/myapp/docker-compose.yml"
       ],

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `images []string` field on `Service` — replaces the removed `image string` field. Supports multiple registry images per compose project; one deploy cycle is triggered when any image changes
+- `silent bool` field on `Service` — excludes the service from validation and monitoring entirely. Healer and monitor skip silent services
+- Per-container stats aggregation in the monitor: CPU is summed across all containers; memory is derived from summed usage/limit bytes for accuracy
+- Web UI: service Name cell now contains a collapsible `<details>` block listing each container's name, state, and status
+
+### Changed
+- `blocked` and `not_found` suppression map keys are now `"service/image"` (e.g. `"myapp/api:latest"`) instead of `"service"`, allowing independent state per image within a service
+- `deployed` map keys are now `"service/image"`; `/status` and web UI show the first matched image's reference and digest
+- Monitor resource alerts are now per-container with independent cooldown keys, preventing one container from suppressing alerts for another
+
+### Removed
+- `image string` field on `Service` — use `images []string` (**breaking change**)
+- `compose_file string` field on `Service` — use `compose_files []string` (**breaking change**)
+- `container_uptime` field from `/status` JSON and web UI; replaced by the live `containers` array
+
 ## [1.0.0-alpha.5] - 2026-02-28
 
 ### Added

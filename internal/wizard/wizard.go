@@ -243,7 +243,19 @@ func editService(s *bufio.Scanner, svc *config.Service) error {
 	fmt.Println("[Service]")
 
 	svc.Name = prompt(s, fmt.Sprintf("  Name [%s]: ", svc.Name), svc.Name)
-	svc.Image = prompt(s, fmt.Sprintf("  Image (e.g. myapp:latest) [%s]: ", svc.Image), svc.Image)
+
+	// images: show existing as comma-separated, accept comma-separated input
+	existingImages := strings.Join(svc.Images, ", ")
+	rawImages := prompt(s, fmt.Sprintf("  Images to watch (comma-separated, e.g. myapp:latest) [%s]: ", existingImages), existingImages)
+	if rawImages != "" {
+		parts := strings.Split(rawImages, ",")
+		svc.Images = make([]string, 0, len(parts))
+		for _, p := range parts {
+			if t := strings.TrimSpace(p); t != "" {
+				svc.Images = append(svc.Images, t)
+			}
+		}
+	}
 
 	// compose_files: show existing as comma-separated, accept comma-separated input
 	existingFiles := strings.Join(svc.ComposeFiles, ", ")

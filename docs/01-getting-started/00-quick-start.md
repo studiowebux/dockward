@@ -77,7 +77,7 @@ sudo tee /etc/dockward/config.json > /dev/null <<'EOF'
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
       "compose_files": ["/srv/myapp/docker-compose.yml"],
       "compose_project": "myapp",
       "auto_update": true,

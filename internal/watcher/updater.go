@@ -34,13 +34,13 @@ type Updater struct {
 	deploying   map[string]time.Time
 	deployingMu sync.RWMutex
 
-	// blocked maps service name -> digest that caused a rollback.
+	// blocked maps "service/image" -> digest that caused a rollback.
 	// Prevents infinite rollback loops by skipping known-bad digests.
 	// Memory-only: cleared on watcher restart.
 	blocked   map[string]string
 	blockedMu sync.RWMutex
 
-	// notFound maps service name -> remote digest at time of failure.
+	// notFound maps "service/image" -> remote digest at time of failure.
 	// Suppresses repeated deploy attempts when the local image cannot be
 	// resolved (e.g. compose file image field mismatch). Cleared when the
 	// remote digest changes, allowing a retry.
@@ -66,7 +66,7 @@ type Updater struct {
 	composeHashes   map[string]string
 	composeHashesMu sync.Mutex
 
-	// deployed maps service name -> deployed image reference, digest, and container uptime.
+	// deployed maps "service/image" -> deployed image reference and digest.
 	// Updated after each successful deploy and on each poll when image is up to date.
 	deployed   map[string]DeployedInfo
 	deployedMu sync.RWMutex
@@ -268,76 +268,95 @@ func (u *Updater) clearPollError(svc config.Service) {
 }
 
 func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error {
-	// Step 1: Get remote digest from registry.
-	remoteDigest, err := u.registry.RemoteDigest(ctx, svc.Image)
-	if err != nil {
-		return fmt.Errorf("remote digest: %w", err)
-	}
+	var changed []imageChange
+	representativeDigest := "" // first matched image's digest, used for startAttempted guard
 
-	// Check if this digest is blocked (caused a previous rollback).
-	u.blockedMu.RLock()
-	blockedDigest := u.blocked[svc.Name]
-	u.blockedMu.RUnlock()
-	if blockedDigest != "" {
-		if blockedDigest == remoteDigest {
-			return nil // Still the same bad digest, skip silently.
+	// Per-image loop: check each image for digest changes.
+	for _, img := range svc.Images {
+		key := svc.Name + "/" + img
+		registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(img)
+
+		// Step 1: Get remote digest from registry.
+		remoteDigest, err := u.registry.RemoteDigest(ctx, img)
+		if err != nil {
+			return fmt.Errorf("remote digest %s: %w", img, err)
 		}
-		// Remote digest changed (fix pushed), clear the block.
-		log.Printf("[updater] %s: blocked digest changed, unblocking", svc.Name)
-		u.blockedMu.Lock()
-		delete(u.blocked, svc.Name)
-		u.blockedMu.Unlock()
-		u.metrics.SetBlocked(svc.Name, false)
-	}
 
-	// Check if this service is in the notFound suppression map.
-	u.notFoundMu.RLock()
-	notFoundDigest := u.notFound[svc.Name]
-	u.notFoundMu.RUnlock()
-	if notFoundDigest != "" {
-		if notFoundDigest == remoteDigest {
-			return nil // Same unresolvable digest, skip silently.
+		// Check if this digest is blocked (caused a previous rollback).
+		u.blockedMu.RLock()
+		blockedDigest := u.blocked[key]
+		u.blockedMu.RUnlock()
+		if blockedDigest != "" {
+			if blockedDigest == remoteDigest {
+				continue // Still the same bad digest, skip silently.
+			}
+			// Remote digest changed (fix pushed), clear the block.
+			log.Printf("[updater] %s/%s: blocked digest changed, unblocking", svc.Name, img)
+			u.blockedMu.Lock()
+			delete(u.blocked, key)
+			u.blockedMu.Unlock()
+			u.metrics.SetBlocked(svc.Name, false)
 		}
-		// Remote digest changed, clear suppression and retry.
-		log.Printf("[updater] %s: registry digest changed since not-found suppression, retrying", svc.Name)
-		u.notFoundMu.Lock()
-		delete(u.notFound, svc.Name)
-		u.notFoundMu.Unlock()
-	}
 
-	// Step 2: Get local digest from Docker.
-	registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(svc.Image)
+		// Check if this image is in the notFound suppression map.
+		u.notFoundMu.RLock()
+		notFoundDigest := u.notFound[key]
+		u.notFoundMu.RUnlock()
+		if notFoundDigest != "" {
+			if notFoundDigest == remoteDigest {
+				continue // Same unresolvable digest, skip silently.
+			}
+			log.Printf("[updater] %s/%s: registry digest changed since not-found suppression, retrying", svc.Name, img)
+			u.notFoundMu.Lock()
+			delete(u.notFound, key)
+			u.notFoundMu.Unlock()
+		}
 
-	localDigest := u.resolveLocalDigest(ctx, svc, registryPrefix)
-	if localDigest == "" {
-		// Suppress future polls until the registry digest changes.
-		log.Printf("[updater] %s: no local digest resolved, suppressing until registry digest changes", svc.Name)
-		u.notFoundMu.Lock()
-		u.notFound[svc.Name] = remoteDigest
-		u.notFoundMu.Unlock()
-		u.dispatcher.Send(ctx, notify.Alert{
-			Service: svc.Name,
-			Event:   "not_found",
-			Message: "Image not found locally. Verify compose file image field matches registry. Suppressing until registry digest changes.",
-			Level:   notify.LevelWarning,
+		// Step 2: Get local digest from Docker.
+		localDigest := u.resolveLocalDigestForImage(ctx, svc, registryPrefix, img)
+		if localDigest == "" {
+			log.Printf("[updater] %s/%s: no local digest resolved, suppressing until registry digest changes", svc.Name, img)
+			u.notFoundMu.Lock()
+			u.notFound[key] = remoteDigest
+			u.notFoundMu.Unlock()
+			u.dispatcher.Send(ctx, notify.Alert{
+				Service: svc.Name,
+				Event:   "not_found",
+				Message: fmt.Sprintf("Image %s not found locally. Verify compose file image field matches registry. Suppressing until registry digest changes.", img),
+				Level:   notify.LevelWarning,
+			})
+			if err := u.audit.Write(audit.Entry{
+				Service: svc.Name,
+				Event:   "not_found",
+				Message: fmt.Sprintf("Image %s not found locally. Suppressing until registry digest changes.", img),
+				Level:   "warning",
+			}); err != nil {
+				log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
+			}
+			continue
+		}
+
+		// Step 3: Compare.
+		if localDigest == remoteDigest {
+			u.setDeployedInfo(key, registryPrefix+":"+imageTag(img), localDigest)
+			if representativeDigest == "" {
+				representativeDigest = remoteDigest
+			}
+			continue
+		}
+
+		log.Printf("[updater] %s/%s: digest changed %s -> %s", svc.Name, img, shortDigest(localDigest), shortDigest(remoteDigest))
+		changed = append(changed, imageChange{
+			Image:     img,
+			OldDigest: localDigest,
+			NewDigest: remoteDigest,
 		})
-		if err := u.audit.Write(audit.Entry{
-			Service: svc.Name,
-			Event:   "not_found",
-			Message: "Image not found locally. Suppressing until registry digest changes.",
-			Level:   "warning",
-		}); err != nil {
-			log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
-		}
-		return nil
 	}
 
-	// Step 3: Compare.
-	if localDigest == remoteDigest {
-		// Digests match, but verify at least one container is running.
-		container, status := u.findContainerByProject(ctx, svc.ComposeProject)
+	// No image changes: verify containers are running, handle auto_start.
+	if len(changed) == 0 {
+		_, status := u.findContainerByProject(ctx, svc.ComposeProject)
 		if status == containerRunning {
-			u.setDeployedInfo(svc.Name, container.Image, localDigest, container.Status)
 			u.startAttemptedMu.Lock()
 			delete(u.startAttempted, svc.Name)
 			u.startAttemptedMu.Unlock()
@@ -345,27 +364,24 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 			return nil
 		}
 
-		// No running container. Only intervene if auto_start is enabled.
 		if !svc.AutoStart {
+			u.clearPollError(svc)
 			return nil
 		}
 
-		// Check if we already tried this digest.
+		// Guard against repeated start attempts at the same image version.
 		u.startAttemptedMu.RLock()
 		attemptedDigest := u.startAttempted[svc.Name]
 		u.startAttemptedMu.RUnlock()
-		if attemptedDigest == remoteDigest {
+		if attemptedDigest != "" && attemptedDigest == representativeDigest {
 			return nil
 		}
-
 		u.startAttemptedMu.Lock()
-		u.startAttempted[svc.Name] = remoteDigest
+		u.startAttempted[svc.Name] = representativeDigest
 		u.startAttemptedMu.Unlock()
 
 		switch status {
 		case containerStuck:
-			// Containers exist but none running (created/restarting).
-			// Force a clean restart to recover from the stuck state.
 			log.Printf("[updater] %s: containers stuck (created/restarting), forcing down+up", svc.Name)
 			if err := compose.Restart(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 				return fmt.Errorf("compose restart (stuck containers): %w", err)
@@ -377,32 +393,31 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 				Level:   notify.LevelWarning,
 			})
 		default:
-			// No containers at all. Normal start.
-			log.Printf("[updater] %s: image up to date but no containers, starting compose project", svc.Name)
+			log.Printf("[updater] %s: images up to date but no containers, starting compose project", svc.Name)
 			if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 				return fmt.Errorf("compose up (no running container): %w", err)
 			}
 			u.dispatcher.Send(ctx, notify.Alert{
 				Service: svc.Name,
 				Event:   "started",
-				Message: "Image up to date but no containers found. Started compose project.",
+				Message: "Images up to date but no containers found. Started compose project.",
 				Level:   notify.LevelWarning,
 			})
 		}
+		u.clearPollError(svc)
 		return nil
 	}
 
-	log.Printf("[updater] %s: digest changed %s -> %s", svc.Name, shortDigest(localDigest), shortDigest(remoteDigest))
 	u.clearPollError(svc)
-	return u.deploy(ctx, svc, localDigest, remoteDigest)
+	return u.deploy(ctx, svc, changed)
 }
 
-// resolveLocalDigest tries two strategies to find the local image digest:
+// resolveLocalDigestForImage tries two strategies to find the local image digest:
 //  1. Inspect image by constructed reference (registryHost/name:tag).
 //  2. Fallback: find the running container by compose project label, get its
 //     image ID, inspect by ID, and extract digest from RepoDigests.
-func (u *Updater) resolveLocalDigest(ctx context.Context, svc config.Service, registryPrefix string) string {
-	fullImage := registryPrefix + ":" + imageTag(svc.Image)
+func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Service, registryPrefix, img string) string {
+	fullImage := registryPrefix + ":" + imageTag(img)
 
 	// Strategy 1: direct image inspect by reference.
 	localImg, err := u.docker.InspectImage(ctx, fullImage)
@@ -410,69 +425,73 @@ func (u *Updater) resolveLocalDigest(ctx context.Context, svc config.Service, re
 		if d := localImg.LocalDigest(registryPrefix); d != "" {
 			return d
 		}
-		log.Printf("[updater] %s: image found by reference but no matching digest in RepoDigests", svc.Name)
+		log.Printf("[updater] %s/%s: image found by reference but no matching digest in RepoDigests", svc.Name, img)
 	} else {
-		log.Printf("[updater] %s: inspect image %s failed: %v", svc.Name, fullImage, err)
+		log.Printf("[updater] %s/%s: inspect image %s failed: %v", svc.Name, img, fullImage, err)
 	}
 
 	// Strategy 2: resolve via running container's image ID.
 	container, status := u.findContainerByProject(ctx, svc.ComposeProject)
 	if status != containerRunning {
-		log.Printf("[updater] %s: no running container for fallback digest resolution", svc.Name)
+		log.Printf("[updater] %s/%s: no running container for fallback digest resolution", svc.Name, img)
 		return ""
 	}
 
 	info, err := u.docker.InspectContainer(ctx, container.ID)
 	if err != nil {
-		log.Printf("[updater] %s: container inspect failed during fallback: %v", svc.Name, err)
+		log.Printf("[updater] %s/%s: container inspect failed during fallback: %v", svc.Name, img, err)
 		return ""
 	}
 
 	// ContainerInspect.Image is the image ID (sha256:...).
 	imgByID, err := u.docker.InspectImage(ctx, info.Image)
 	if err != nil {
-		log.Printf("[updater] %s: inspect image by ID %s failed: %v", svc.Name, info.Image, err)
+		log.Printf("[updater] %s/%s: inspect image by ID %s failed: %v", svc.Name, img, info.Image, err)
 		return ""
 	}
 
 	if d := imgByID.LocalDigest(registryPrefix); d != "" {
-		log.Printf("[updater] %s: resolved digest via container fallback", svc.Name)
+		log.Printf("[updater] %s/%s: resolved digest via container fallback", svc.Name, img)
 		return d
 	}
 
-	log.Printf("[updater] %s: fallback image has no matching RepoDigests for %s", svc.Name, registryPrefix)
+	log.Printf("[updater] %s/%s: fallback image has no matching RepoDigests for %s", svc.Name, img, registryPrefix)
 	return ""
 }
 
-func (u *Updater) deploy(ctx context.Context, svc config.Service, oldDigest, newDigest string) error {
+func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imageChange) error {
 	// Atomic deploy guard: prevent concurrent deploys for the same service.
 	if !u.tryStartDeploy(svc.Name) {
 		log.Printf("[updater] %s: deploy already in progress, skipping", svc.Name)
 		return nil
 	}
 
-	registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(svc.Image)
-	fullImage := registryPrefix + ":" + imageTag(svc.Image)
-
-	// Step 1: Tag current image as :rollback using the running container's image ID.
-	// We resolve by image ID because compose may store the image under a short reference
-	// (e.g. "firegen:latest") that does not match the constructed registry prefix form
-	// ("localhost:5000/firegen:latest"). TagImage by ID always succeeds.
-	// We also capture the compose image reference so rollback can retag to the right name.
-	var oldImageRef string
-	if oldDigest != "" {
-		if container, cStatus := u.findContainerByProject(ctx, svc.ComposeProject); cStatus == containerRunning {
-			if info, err := u.docker.InspectContainer(ctx, container.ID); err == nil {
-				oldImageRef = info.Config.Image // reference compose used (e.g. "firegen:latest")
-				if err := u.docker.TagImage(ctx, info.Image, registryPrefix, "rollback"); err != nil {
-					log.Printf("[updater] %s: failed to tag rollback: %v", svc.Name, err)
-					// Continue anyway; rollback won't be available.
+	// Step 1: For each changed image, tag the currently running container's image as :rollback.
+	// We tag by image ID so it works regardless of how compose references the image name.
+	// We also capture the compose image reference (OldRef) for rollback retag.
+	allContainers, _ := u.docker.ListContainersByProject(ctx, svc.ComposeProject)
+	for i, ch := range changed {
+		registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(ch.Image)
+		imgName := imageName(ch.Image)
+		for _, c := range allContainers {
+			if c.State != "running" {
+				continue
+			}
+			// Match container to image by name (handles both short and registry-prefixed forms).
+			cName := imageName(c.Image)
+			if cName == imgName || strings.HasSuffix(cName, "/"+imgName) {
+				if info, err := u.docker.InspectContainer(ctx, c.ID); err == nil {
+					changed[i].OldRef = info.Config.Image
+					if err := u.docker.TagImage(ctx, info.Image, registryPrefix, "rollback"); err != nil {
+						log.Printf("[updater] %s/%s: failed to tag rollback: %v", svc.Name, ch.Image, err)
+					}
 				}
+				break
 			}
 		}
 	}
 
-	// Step 2: Pull new image and recreate via compose.
+	// Step 2: Pull new images and recreate via compose.
 	log.Printf("[updater] %s: pulling and deploying", svc.Name)
 	if err := compose.Pull(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		u.clearDeploying(svc.Name)
@@ -484,12 +503,12 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, oldDigest, new
 	}
 
 	// Step 3: Verify health asynchronously. clearDeploying is called via defer in verifyAfterDeploy.
-	go u.verifyAfterDeploy(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, oldImageRef)
+	go u.verifyAfterDeploy(ctx, svc, changed)
 
 	return nil
 }
 
-func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, oldDigest, newDigest, fullImage, registryPrefix, oldImageRef string) {
+func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, changed []imageChange) {
 	defer u.clearDeploying(svc.Name)
 
 	grace := time.Duration(svc.HealthGrace) * time.Second
@@ -510,7 +529,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		if cStatus == containerNone {
 			if time.Now().After(deadline) {
 				log.Printf("[updater] %s: container not found after grace period, rolling back", svc.Name)
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "container not found after deploy", oldImageRef)
+				u.rollback(ctx, svc, changed, "container not found after deploy")
 				return
 			}
 			continue // Container may be starting up.
@@ -520,7 +539,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		if err != nil {
 			log.Printf("[updater] %s: inspect failed during health poll: %v", svc.Name, err)
 			if time.Now().After(deadline) {
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "inspect failed: "+err.Error(), oldImageRef)
+				u.rollback(ctx, svc, changed, "inspect failed: "+err.Error())
 				return
 			}
 			continue
@@ -529,11 +548,11 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		// No healthcheck configured: success if running.
 		if info.State.Health == nil {
 			if info.State.Running {
-				u.onDeploySuccess(ctx, svc, oldDigest, newDigest, info.ContainerName(), registryPrefix, info.Config.Image)
+				u.onDeploySuccess(ctx, svc, changed, info.ContainerName(), info.Config.Image)
 				return
 			}
 			if time.Now().After(deadline) {
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "container not running", oldImageRef)
+				u.rollback(ctx, svc, changed, "container not running")
 				return
 			}
 			continue
@@ -541,18 +560,18 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 
 		switch info.State.Health.Status {
 		case "healthy":
-			u.onDeploySuccess(ctx, svc, oldDigest, newDigest, info.ContainerName(), registryPrefix, info.Config.Image)
+			u.onDeploySuccess(ctx, svc, changed, info.ContainerName(), info.Config.Image)
 			return
 		case "unhealthy":
 			reason := info.LastHealthOutput()
 			log.Printf("[updater] %s: unhealthy, rolling back immediately", svc.Name)
-			u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, reason, oldImageRef)
+			u.rollback(ctx, svc, changed, reason)
 			return
 		default: // "starting" or other transient states
 			if time.Now().After(deadline) {
 				reason := info.LastHealthOutput()
 				log.Printf("[updater] %s: still %s after grace period, rolling back", svc.Name, info.State.Health.Status)
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, reason, oldImageRef)
+				u.rollback(ctx, svc, changed, reason)
 				return
 			}
 			// Keep polling.
@@ -560,17 +579,19 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 	}
 }
 
-func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, oldDigest, newDigest, containerName, registryPrefix, imageRef string) {
+func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, changed []imageChange, containerName, imageRef string) {
 	log.Printf("[updater] %s: deployed successfully", svc.Name)
 	u.metrics.IncUpdates(svc.Name)
 	u.metrics.SetHealthy(svc.Name, true)
-	u.setDeployedInfo(svc.Name, imageRef, newDigest, "")
+	for _, ch := range changed {
+		u.setDeployedInfo(svc.Name+"/"+ch.Image, imageRef, ch.NewDigest)
+	}
 	u.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
 		Event:     "updated",
 		Message:   "Deployed new image successfully.",
-		OldDigest: oldDigest,
-		NewDigest: newDigest,
+		OldDigest: changed[0].OldDigest,
+		NewDigest: changed[0].NewDigest,
 		Container: containerName,
 		Level:     notify.LevelInfo,
 	})
@@ -579,53 +600,62 @@ func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, oldDi
 		Event:     "updated",
 		Message:   "Deployed new image successfully.",
 		Level:     "info",
-		OldDigest: oldDigest,
-		NewDigest: newDigest,
+		OldDigest: changed[0].OldDigest,
+		NewDigest: changed[0].NewDigest,
 		Container: containerName,
 	}); err != nil {
 		log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
 	}
-	u.cleanupRollback(ctx, registryPrefix)
+	u.cleanupRollbacks(ctx, changed)
 }
 
-func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, newDigest, fullImage, registryPrefix, reason, oldImageRef string) {
+func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []imageChange, reason string) {
 	log.Printf("[updater] %s: rolling back. Reason: %s", svc.Name, reason)
 	u.metrics.IncRollbacks(svc.Name)
 	u.metrics.SetHealthy(svc.Name, false)
 
-	// Block this digest to prevent infinite rollback loops.
+	// Block all new digests to prevent infinite rollback loops.
 	u.blockedMu.Lock()
-	u.blocked[svc.Name] = newDigest
+	for _, ch := range changed {
+		key := svc.Name + "/" + ch.Image
+		u.blocked[key] = ch.NewDigest
+		log.Printf("[updater] %s/%s: blocked digest %s", svc.Name, ch.Image, shortDigest(ch.NewDigest))
+	}
 	u.blockedMu.Unlock()
 	u.metrics.SetBlocked(svc.Name, true)
-	log.Printf("[updater] %s: blocked digest %s", svc.Name, shortDigest(newDigest))
 
-	// Retag :rollback as :latest and redeploy.
-	rollbackImage := registryPrefix + ":rollback"
-	tag := imageTag(svc.Image)
-
+	// Retag each :rollback back to its versioned tag and (if needed) to the compose ref.
 	// If compose uses a different image reference than the registry-prefixed form
 	// (e.g. "localhost:5000/firegen:latest" vs "firegen:latest"), also retag to
 	// that reference so compose up picks up the old image correctly.
-	// This handles the case where Docker stores the image without a RepoTag for
-	// the registry-prefixed name after a local registry pull.
-	composeRef := registryPrefix + ":" + tag
-	if oldImageRef != "" && oldImageRef != composeRef {
-		if err := u.docker.TagImage(ctx, rollbackImage, imageName(oldImageRef), imageTag(oldImageRef)); err != nil {
-			log.Printf("[updater] %s: rollback retag to compose ref %s failed: %v", svc.Name, oldImageRef, err)
+	tagFailed := false
+	for _, ch := range changed {
+		registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(ch.Image)
+		tag := imageTag(ch.Image)
+		rollbackImage := registryPrefix + ":rollback"
+		composeRef := registryPrefix + ":" + tag
+
+		if ch.OldRef != "" && ch.OldRef != composeRef {
+			if err := u.docker.TagImage(ctx, rollbackImage, imageName(ch.OldRef), imageTag(ch.OldRef)); err != nil {
+				log.Printf("[updater] %s/%s: rollback retag to compose ref %s failed: %v", svc.Name, ch.Image, ch.OldRef, err)
+			}
+		}
+
+		if err := u.docker.TagImage(ctx, rollbackImage, registryPrefix, tag); err != nil {
+			log.Printf("[updater] %s/%s: rollback tag failed: %v", svc.Name, ch.Image, err)
+			tagFailed = true
 		}
 	}
 
-	if err := u.docker.TagImage(ctx, rollbackImage, registryPrefix, tag); err != nil {
-		log.Printf("[updater] %s: rollback tag failed: %v", svc.Name, err)
+	if tagFailed {
 		u.metrics.IncFailures(svc.Name)
 		u.dispatcher.Send(ctx, notify.Alert{
 			Service:   svc.Name,
 			Event:     "rolled_back",
 			Message:   "Rollback failed: could not retag image.",
 			Reason:    reason,
-			OldDigest: oldDigest,
-			NewDigest: newDigest,
+			OldDigest: changed[0].OldDigest,
+			NewDigest: changed[0].NewDigest,
 			Level:     notify.LevelCritical,
 		})
 		if werr := u.audit.Write(audit.Entry{
@@ -633,8 +663,8 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 			Event:     "rolled_back",
 			Message:   "Rollback failed: could not retag image.",
 			Level:     "critical",
-			OldDigest: oldDigest,
-			NewDigest: newDigest,
+			OldDigest: changed[0].OldDigest,
+			NewDigest: changed[0].NewDigest,
 			Reason:    reason,
 		}); werr != nil {
 			log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
@@ -650,8 +680,8 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 			Event:     "rolled_back",
 			Message:   "Rollback compose up failed.",
 			Reason:    reason,
-			OldDigest: oldDigest,
-			NewDigest: newDigest,
+			OldDigest: changed[0].OldDigest,
+			NewDigest: changed[0].NewDigest,
 			Level:     notify.LevelCritical,
 		})
 		if werr := u.audit.Write(audit.Entry{
@@ -659,8 +689,8 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 			Event:     "rolled_back",
 			Message:   "Rollback compose up failed.",
 			Level:     "critical",
-			OldDigest: oldDigest,
-			NewDigest: newDigest,
+			OldDigest: changed[0].OldDigest,
+			NewDigest: changed[0].NewDigest,
 			Reason:    reason,
 		}); werr != nil {
 			log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
@@ -673,8 +703,8 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 		Event:     "rolled_back",
 		Message:   "Rolled back to previous image.",
 		Reason:    reason,
-		OldDigest: oldDigest,
-		NewDigest: newDigest,
+		OldDigest: changed[0].OldDigest,
+		NewDigest: changed[0].NewDigest,
 		Level:     notify.LevelWarning,
 	})
 	if err := u.audit.Write(audit.Entry{
@@ -682,19 +712,22 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 		Event:     "rolled_back",
 		Message:   "Rolled back to previous image.",
 		Level:     "warning",
-		OldDigest: oldDigest,
-		NewDigest: newDigest,
+		OldDigest: changed[0].OldDigest,
+		NewDigest: changed[0].NewDigest,
 		Reason:    reason,
 	}); err != nil {
 		log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
 	}
 
-	u.cleanupRollback(ctx, registryPrefix)
+	u.cleanupRollbacks(ctx, changed)
 }
 
-func (u *Updater) cleanupRollback(ctx context.Context, registryPrefix string) {
-	if err := u.docker.RemoveImage(ctx, registryPrefix+":rollback"); err != nil {
-		log.Printf("[updater] failed to remove rollback image %s:rollback: %v", registryPrefix, err)
+func (u *Updater) cleanupRollbacks(ctx context.Context, changed []imageChange) {
+	for _, ch := range changed {
+		registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(ch.Image)
+		if err := u.docker.RemoveImage(ctx, registryPrefix+":rollback"); err != nil {
+			log.Printf("[updater] failed to remove rollback image %s:rollback: %v", registryPrefix, err)
+		}
 	}
 }
 
@@ -731,25 +764,66 @@ func (u *Updater) ErroredServices() map[string]string {
 	return result
 }
 
-// UnblockService clears the blocked digest for a service.
-// Returns true if the service was blocked.
+// UnblockService clears all blocked digests for a service (prefix scan over "service/image" keys).
+// Returns true if at least one image was unblocked.
 func (u *Updater) UnblockService(service string) bool {
+	prefix := service + "/"
 	u.blockedMu.Lock()
-	_, ok := u.blocked[service]
-	delete(u.blocked, service)
+	found := false
+	for k := range u.blocked {
+		if strings.HasPrefix(k, prefix) {
+			delete(u.blocked, k)
+			found = true
+		}
+	}
 	u.blockedMu.Unlock()
-	if ok {
+	if found {
 		u.metrics.SetBlocked(service, false)
 		log.Printf("[updater] %s: manually unblocked", service)
 	}
-	return ok
+	return found
 }
 
-// DeployedInfo holds the deployed image reference, digest, and container uptime for a service.
+// ContainersByProject returns all containers for a compose project.
+func (u *Updater) ContainersByProject(ctx context.Context, project string) ([]docker.Container, error) {
+	return u.docker.ListContainersByProject(ctx, project)
+}
+
+// serviceContainerInfos fetches containers for a project and converts them to ContainerInfo.
+// ContainerInfo is defined in api.go (same package).
+func (u *Updater) serviceContainerInfos(ctx context.Context, project string) []ContainerInfo {
+	list, err := u.docker.ListContainersByProject(ctx, project)
+	if err != nil {
+		return nil
+	}
+	result := make([]ContainerInfo, 0, len(list))
+	for _, c := range list {
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		result = append(result, ContainerInfo{
+			Name:   name,
+			State:  c.State,
+			Status: c.Status,
+			Image:  c.Image,
+		})
+	}
+	return result
+}
+
+// imageChange records a digest transition for a single image within a deploy cycle.
+type imageChange struct {
+	Image     string // short form from config (e.g. "api:latest")
+	OldDigest string
+	NewDigest string
+	OldRef    string // compose image reference captured from container inspect (for rollback retag)
+}
+
+// DeployedInfo holds the deployed image reference and digest for a service image.
 type DeployedInfo struct {
 	Image  string // full image reference from container (e.g. localhost:5000/myapp:latest)
 	Digest string // full digest (displayed as shortDigest in the UI)
-	Uptime string // Docker status string (e.g. "Up 3 hours")
 }
 
 // containerStatus describes the state of containers in a compose project.
@@ -761,10 +835,11 @@ const (
 	containerRunning                        // At least one container is running or exited
 )
 
-// setDeployedInfo stores the deployed image reference, digest, and uptime for a service.
-func (u *Updater) setDeployedInfo(service, image, digest, uptime string) {
+// setDeployedInfo stores the deployed image reference and digest for a service image key.
+// key format: "service/image" (e.g. "myapp/api:latest")
+func (u *Updater) setDeployedInfo(key, image, digest string) {
 	u.deployedMu.Lock()
-	u.deployed[service] = DeployedInfo{Image: image, Digest: digest, Uptime: uptime}
+	u.deployed[key] = DeployedInfo{Image: image, Digest: digest}
 	u.deployedMu.Unlock()
 }
 
