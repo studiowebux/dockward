@@ -8,6 +8,7 @@
   - [Installation](01-getting-started/01-installation.md)
   - [Configuration](01-getting-started/02-configuration.md)
   - [GitHub Actions](01-getting-started/03-github-actions.md)
+  - [Features](01-getting-started/04-features.md)
 - Guides
   - [Full Mode](03-guides/01-full-mode.md)
   - [Heal-Only Mode](03-guides/02-heal-only-mode.md)

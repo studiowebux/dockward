@@ -59,6 +59,8 @@ nav:
         path: 01-getting-started/02-configuration.md
       - title: GitHub Actions
         path: 01-getting-started/03-github-actions.md
+      - title: Features
+        path: 01-getting-started/04-features.md
   - title: Guides
     path: 03-guides/
     children:
