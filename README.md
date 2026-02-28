@@ -4,10 +4,12 @@ Auto-deploy and auto-heal agent for self-hosted Docker containers.
 
 ## Why this project exists?
 
-Every image push to a self-hosted registry ends with a manual SSH session to pull, restart, and hope the health check passes. Managed platforms solve this but add cloud cost, vendor lock-in, and latency between your registry and your compute. Dockward closes that gap: it watches your local registry, handles the full deploy → health-check → rollback cycle automatically, and restarts unhealthy containers without human intervention. No agents baked into your images, no cloud account, no SaaS bill.
+I got tired of SSHing into my server every time I pushed a new image. Pull, restart, watch the logs, roll back if something broke — all manual, all in the middle of the night. Dockward handles that loop automatically. It watches a local Docker registry, deploys through compose, health-checks the result, and rolls back if the container fails to come up healthy. No cloud account, no extra agents in your images, just a small binary running on the same box as Docker.
 
 Bug tracker: https://github.com/studiowebux/dockward/issues<br>
 Discord: https://discord.gg/BG5Erm9fNv
+
+## Funding
 
 [Buy Me a Coffee](https://buymeacoffee.com/studiowebux)<br>
 [GitHub Sponsors](https://github.com/sponsors/studiowebux)<br>

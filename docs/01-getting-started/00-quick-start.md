@@ -98,12 +98,13 @@ Use the interactive wizard instead of editing the file by hand: `dockward config
 ## 3. Install and Start the Systemd Service
 
 ```sh
-sudo cp /usr/local/share/dockward/dockward.service /etc/systemd/system/dockward.service
+sudo curl -Lo /etc/systemd/system/dockward.service \
+  https://raw.githubusercontent.com/studiowebux/dockward/main/dockward.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now dockward
 ```
 
-If you built from source, copy the unit file from the repo:
+If you built from source, copy the unit file from the repo instead:
 
 ```sh
 sudo cp dockward.service /etc/systemd/system/dockward.service

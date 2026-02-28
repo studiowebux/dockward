@@ -30,6 +30,15 @@ For configuration fields see [Config Reference](../02-reference/01-config.md). F
     "url": "http://localhost:5000",
     "poll_interval": 300
   },
+  "monitor": {
+    "stats_interval": 30
+  },
+  "api": {
+    "port": "9090"
+  },
+  "audit": {
+    "path": "/var/log/dockward/audit.jsonl"
+  },
   "services": [
     {
       "name": "myapp",
@@ -38,11 +47,16 @@ For configuration fields see [Config Reference](../02-reference/01-config.md). F
         "/srv/myapp/docker-compose.yml"
       ],
       "compose_project": "myapp",
+      "env_file": "/srv/myapp/.env",
       "auto_update": true,
+      "auto_start": true,
       "auto_heal": true,
+      "compose_watch": false,
       "health_grace": 60,
       "heal_cooldown": 300,
-      "heal_max_restarts": 3
+      "heal_max_restarts": 3,
+      "cpu_threshold": 80,
+      "memory_threshold": 85
     }
   ]
 }
