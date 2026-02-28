@@ -451,6 +451,13 @@ func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear the server-level WriteTimeout so this long-lived connection is not
+	// killed after 30 s. Uses ResponseController (Go 1.20+).
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		log.Printf("[api] ui/events: could not clear write deadline: %v", err)
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

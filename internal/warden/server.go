@@ -36,8 +36,9 @@ func NewServer(cfg *WardenConfig) *Server {
 		hub:       h,
 		heartbeat: hb,
 		server: &http.Server{
-			Addr:    fmt.Sprintf(":%s", cfg.API.Port),
-			Handler: mux,
+			Addr:              fmt.Sprintf(":%s", cfg.API.Port),
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
 

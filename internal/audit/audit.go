@@ -76,7 +76,7 @@ func New(path string) (*Logger, error) {
 	if path == "" {
 		return &Logger{}, nil
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644) // #nosec G304 -- path from config, not user input
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304 -- path from config, not user input
 	if err != nil {
 		return nil, fmt.Errorf("open audit log %s: %w", path, err)
 	}
@@ -135,7 +135,7 @@ func (l *Logger) Recent(n int) ([]Entry, error) {
 	name := l.file.Name()
 	l.mu.Unlock()
 
-	f, err := os.Open(name) // #nosec G304 -- opening our own log file
+	f, err := os.Open(name) // #nosec G304,G703 -- opening our own log file, path from config
 	if err != nil {
 		return nil, fmt.Errorf("read audit log: %w", err)
 	}

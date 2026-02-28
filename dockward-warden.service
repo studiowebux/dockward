@@ -3,7 +3,7 @@ Description=Dockward Warden — multi-machine audit aggregator
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/dockward --mode warden --config /etc/dockward/warden.json
+ExecStart=/usr/local/bin/dockward -mode warden -config /etc/dockward/warden.json
 Restart=always
 RestartSec=10
 User=root
