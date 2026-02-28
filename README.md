@@ -1,38 +1,17 @@
 # Dockward
 
-Auto-deploy and auto-heal agent for self-hosted Docker containers — polls your local registry, deploys via compose when a new image lands, rolls back on health failure, and restarts unhealthy containers. Zero cloud dependencies.
+Auto-deploy and auto-heal agent for self-hosted Docker containers.
 
-Bug tracker: https://github.com/studiowebux/dockward/issues
+## Why this project exists?
+
+Every image push to a self-hosted registry ends with a manual SSH session to pull, restart, and hope the health check passes. Managed platforms solve this but add cloud cost, vendor lock-in, and latency between your registry and your compute. Dockward closes that gap: it watches your local registry, handles the full deploy → health-check → rollback cycle automatically, and restarts unhealthy containers without human intervention. No agents baked into your images, no cloud account, no SaaS bill.
+
+Bug tracker: https://github.com/studiowebux/dockward/issues<br>
 Discord: https://discord.gg/BG5Erm9fNv
 
-Funding: [Buy Me a Coffee](https://buymeacoffee.com/studiowebux) | [GitHub Sponsors](https://github.com/sponsors/studiowebux) | [Patreon](https://patreon.com/studiowebux)
-
-## About
-
-Single static Go binary (~12 MB), zero external dependencies. Talks to the Docker daemon via unix socket and a local registry via its HTTP API.
-
-**What it does:**
-
-- **Registry polling** — compares local vs remote image digest on a configurable interval; deploys automatically when a new image is pushed
-- **Safe deploy pipeline** — tags the current image as `:rollback` before pulling, then runs `docker compose pull` + `docker compose up -d`
-- **Health-gated rollback** — monitors container health during a configurable grace period; rolls back immediately on unhealthy status and blocks the bad digest to prevent loops
-- **Auto-start** — detects when a compose project has the right image but no running containers and starts it
-- **Compose drift detection** — hashes compose file contents each cycle; reapplies with `compose up` (no pull) when the spec changes
-- **Auto-heal** — listens to Docker events (`health_status`, `die`), restarts failed containers with configurable cooldown and per-service restart limits
-- **Resource monitoring** — collects CPU and memory usage per container; alerts when thresholds are exceeded
-- **Web UI** — live dashboard at `/ui` with service status, deployed image name, digest, container uptime, CPU/memory, event stream (SSE), and trigger/unblock actions
-- **Audit log** — structured history of all deploy, rollback, heal, and error events; queryable via `GET /audit`
-- **Prometheus metrics** — counters and gauges at `GET /metrics` for updates, rollbacks, restarts, failures, and health state
-- **REST API** — `POST /trigger`, `GET /status`, `GET /blocked`, `GET /not-found`, `GET /errored`, `GET /health`
-- **Notifications** — Discord webhook, SMTP email, and custom HTTP webhooks for deploy, rollback, heal, and alert events
-- **Central warden** — optional aggregator that collects status from multiple agents via HTTP push and exposes a unified SSE stream and web UI
-- **Heal-only mode** — healthcheck monitoring and auto-restart for any container; no registry or compose files required
-- **systemd-ready** — ships with a `dockward.service` unit file
-
-Two operational modes:
-
-1. **Full mode**: registry polling + auto-deploy with rollback + auto-heal. Requires a local Docker registry and docker compose.
-2. **Heal-only mode**: healthcheck monitoring + auto-restart. Works with any container (compose-managed or standalone `docker run`). No registry or compose files needed.
+[Buy Me a Coffee](https://buymeacoffee.com/studiowebux)<br>
+[GitHub Sponsors](https://github.com/sponsors/studiowebux)<br>
+[Patreon](https://patreon.com/studiowebux)
 
 ## Features
 
@@ -57,15 +36,9 @@ Two operational modes:
 
 ## Installation
 
-Download the latest binary from [Releases](https://github.com/studiowebux/dockward/releases) or build from source (requires Go 1.24+):
+### Binary
 
-```sh
-git clone https://github.com/studiowebux/dockward.git
-cd dockward
-GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=$(git describe --tags --always)" -o dockward-linux-amd64 ./cmd/dockward/
-```
-
-Install on the target host:
+Download the latest release for your platform from [Releases](https://github.com/studiowebux/dockward/releases), then install:
 
 ```sh
 sudo cp dockward-linux-amd64 /usr/local/bin/dockward
@@ -77,25 +50,34 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dockward
 ```
 
-Full installation guide: [docs/01-getting-started/01-installation.md](docs/01-getting-started/01-installation.md)
+### From source
+
+Requires Go 1.24+.
+
+```sh
+git clone https://github.com/studiowebux/dockward.git
+cd dockward
+GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=$(git describe --tags --always)" -o dockward-linux-amd64 ./cmd/dockward/
+```
 
 ## Usage
 
 ```sh
 dockward -config /etc/dockward/config.json
-dockward -config /etc/dockward/config.json --verbose
 ```
 
 ## Getting Started
 
-### Heal-only mode (standalone container)
+### Heal-only mode
+
+Watch and restart any container without a registry or compose setup:
 
 ```json
 {
   "services": [
     {
-      "name": "standalone-api",
-      "container_name": "standalone-api",
+      "name": "myapp",
+      "container_name": "myapp",
       "auto_heal": true,
       "heal_cooldown": 120,
       "heal_max_restarts": 5
@@ -116,9 +98,7 @@ dockward -config /etc/dockward/config.json --verbose
     {
       "name": "myapp",
       "images": ["myapp:latest"],
-      "compose_files": [
-        "/srv/myapp/docker-compose.yml"
-      ],
+      "compose_files": ["/srv/myapp/docker-compose.yml"],
       "compose_project": "myapp",
       "auto_update": true,
       "auto_heal": true,
@@ -129,11 +109,20 @@ dockward -config /etc/dockward/config.json --verbose
 }
 ```
 
-Full documentation: [docs/](docs/)
+## Documentation
+
+https://studiowebux.github.io/dockward
 
 ## Contributions
 
-https://github.com/studiowebux/dockward
+Contributions are welcome via pull request.
+
+1. Fork the repository
+2. Create a branch: `git checkout -b feat/your-feature`
+3. Commit your changes
+4. Open a pull request against `main`
+
+Open an issue before starting significant work.
 
 ## License
 
@@ -141,4 +130,6 @@ https://github.com/studiowebux/dockward
 
 ## Contact
 
-[Studio Webux](https://studiowebux.com) | [Discord](https://discord.gg/BG5Erm9fNv) | tommy@studiowebux.com
+[Studio Webux](https://studiowebux.com)<br>
+[Discord](https://discord.gg/BG5Erm9fNv)<br>
+tommy@studiowebux.com
