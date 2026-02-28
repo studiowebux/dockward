@@ -49,7 +49,7 @@ landing:
   enabled: true
   nav:
     - text: "Docs"
-      url: "/getting-started/quick-start.html"
+      url: "/index.html"
     - text: "GitHub"
       url: "https://github.com/studiowebux/dockward"
     - text: "Discord"
@@ -84,7 +84,7 @@ landing:
         description: "Watch and recover a service without ever touching its image — useful for third-party or pinned containers."
       - emoji: "~"
         title: "Blocked digest protection"
-        description: "Permanently blacklists a known-bad digest; dockward refuses to deploy it again even if it reappears in the registry."
+        description: "Permanently blocks a known-bad digest; dockward refuses to deploy it again even if it reappears in the registry."
       - emoji: "~"
         title: "Resource alerts"
         description: "Per-container CPU and memory thresholds with independent cooldowns; fires notifications before a service falls over."
