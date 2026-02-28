@@ -80,22 +80,22 @@ type Webhook struct {
 
 // Service defines a watched Docker service.
 type Service struct {
-	Name           string   `json:"name"`
-	Image          string   `json:"image"`
-	ComposeFile    string   `json:"compose_file,omitempty"`  // Deprecated: use compose_files
-	ComposeFiles   []string `json:"compose_files,omitempty"` // Ordered list of compose files; merged left to right
-	ComposeProject string   `json:"compose_project"`
-	ContainerName  string   `json:"container_name,omitempty"`
-	EnvFile        string   `json:"env_file,omitempty"`
-	AutoUpdate      bool    `json:"auto_update"`
-	AutoStart       bool    `json:"auto_start"`
-	AutoHeal        bool    `json:"auto_heal"`
-	ComposeWatch    bool    `json:"compose_watch"`    // re-deploy on compose file content change (no pull)
-	CPUThreshold    float64 `json:"cpu_threshold"`    // alert when CPU % exceeds this value; 0 = disabled
-	MemoryThreshold float64 `json:"memory_threshold"` // alert when memory % exceeds this value; 0 = disabled
-	HealthGrace    int      `json:"health_grace"`     // seconds, default 60
-	HealCooldown   int      `json:"heal_cooldown"`    // seconds, default 300
-	HealMaxRestarts int     `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3
+	Name            string   `json:"name"`
+	Images          []string `json:"images,omitempty"`        // Registry images to watch for updates
+	Silent          bool     `json:"silent"`                  // Exclude from validation and monitoring (e.g., heal-only with no images)
+	ComposeFiles    []string `json:"compose_files,omitempty"` // Ordered list of compose files; merged left to right
+	ComposeProject  string   `json:"compose_project"`
+	ContainerName   string   `json:"container_name,omitempty"`
+	EnvFile         string   `json:"env_file,omitempty"`
+	AutoUpdate      bool     `json:"auto_update"`
+	AutoStart       bool     `json:"auto_start"`
+	AutoHeal        bool     `json:"auto_heal"`
+	ComposeWatch    bool     `json:"compose_watch"`    // re-deploy on compose file content change (no pull)
+	CPUThreshold    float64  `json:"cpu_threshold"`    // alert when CPU % exceeds this value; 0 = disabled
+	MemoryThreshold float64  `json:"memory_threshold"` // alert when memory % exceeds this value; 0 = disabled
+	HealthGrace     int      `json:"health_grace"`     // seconds, default 60
+	HealCooldown    int      `json:"heal_cooldown"`    // seconds, default 300
+	HealMaxRestarts int      `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3
 }
 
 // Load reads and parses a JSON config file.
@@ -144,10 +144,6 @@ func (c *Config) setDefaults() {
 		c.API.Port = "9090"
 	}
 	for i := range c.Services {
-		// Backward compat: promote deprecated compose_file into compose_files.
-		if len(c.Services[i].ComposeFiles) == 0 && c.Services[i].ComposeFile != "" {
-			c.Services[i].ComposeFiles = []string{c.Services[i].ComposeFile}
-		}
 		if c.Services[i].HealthGrace <= 0 {
 			c.Services[i].HealthGrace = 60
 		}
@@ -162,15 +158,18 @@ func (c *Config) setDefaults() {
 
 func (c *Config) validate() error {
 	for i, svc := range c.Services {
+		if svc.Silent {
+			continue
+		}
 		if svc.Name == "" {
 			return fmt.Errorf("service[%d]: name is required", i)
 		}
 		if svc.AutoUpdate {
-			if svc.Image == "" {
-				return fmt.Errorf("service[%d] %q: image is required when auto_update is true", i, svc.Name)
+			if len(svc.Images) == 0 {
+				return fmt.Errorf("service[%d] %q: images is required when auto_update is true", i, svc.Name)
 			}
 			if len(svc.ComposeFiles) == 0 {
-				return fmt.Errorf("service[%d] %q: compose_files (or deprecated compose_file) is required when auto_update is true", i, svc.Name)
+				return fmt.Errorf("service[%d] %q: compose_files is required when auto_update is true", i, svc.Name)
 			}
 			if svc.ComposeProject == "" {
 				return fmt.Errorf("service[%d] %q: compose_project is required when auto_update is true", i, svc.Name)

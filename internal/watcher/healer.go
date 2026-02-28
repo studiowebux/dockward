@@ -86,6 +86,9 @@ func (h *Healer) Run(ctx context.Context) {
 // to pre-populate health gauges before the first Docker event fires.
 func (h *Healer) seedHealthFromInspect(ctx context.Context) {
 	for _, svc := range h.cfg.Services {
+		if svc.Silent {
+			continue
+		}
 		id := findRunningContainerID(ctx, h.docker, svc)
 		if id == "" {
 			continue
@@ -396,6 +399,9 @@ func (h *Healer) findServiceByEvent(event docker.Event) *config.Service {
 	name := event.Actor.Attributes["name"]
 	for i := range h.cfg.Services {
 		svc := &h.cfg.Services[i]
+		if svc.Silent {
+			continue
+		}
 		if project != "" && svc.ComposeProject == project {
 			return svc
 		}

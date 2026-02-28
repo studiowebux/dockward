@@ -53,7 +53,7 @@ Poll a local registry, auto-deploy on image change, and auto-heal:
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
       "compose_files": [
         "/srv/myapp/docker-compose.yml"
       ],
@@ -79,7 +79,7 @@ Pass multiple files to `compose_files` to simulate `docker compose -f base.yml -
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
       "compose_files": [
         "/srv/myapp/docker-compose.yml",
         "/srv/myapp/docker-compose.override.yml"
@@ -93,10 +93,6 @@ Pass multiple files to `compose_files` to simulate `docker compose -f base.yml -
   ]
 }
 ```
-
-:::note
-The deprecated singular `compose_file` field is still accepted and is promoted to a single-element `compose_files` array at load time. Prefer `compose_files` in new configs.
-:::
 
 ## Mixed Services
 
@@ -116,7 +112,7 @@ A single config can mix full-mode and heal-only services:
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
       "compose_files": ["/srv/myapp/docker-compose.yml"],
       "compose_project": "myapp",
       "auto_update": true,

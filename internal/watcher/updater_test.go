@@ -49,18 +49,18 @@ func TestBlockedDigests_UnblockService(t *testing.T) {
 	}
 
 	u.blockedMu.Lock()
-	u.blocked["svc"] = "sha256:abc"
+	u.blocked["svc/api:latest"] = "sha256:abc"
 	u.blockedMu.Unlock()
 
 	blocked := u.BlockedDigests()
-	if blocked["svc"] != "sha256:abc" {
-		t.Errorf("want sha256:abc, got %q", blocked["svc"])
+	if blocked["svc/api:latest"] != "sha256:abc" {
+		t.Errorf("want sha256:abc, got %q", blocked["svc/api:latest"])
 	}
 
 	if !u.UnblockService("svc") {
 		t.Error("UnblockService should return true for a blocked service")
 	}
-	if u.BlockedDigests()["svc"] != "" {
+	if len(u.BlockedDigests()) != 0 {
 		t.Error("service should be unblocked")
 	}
 
@@ -76,11 +76,76 @@ func TestBlockedDigests_NotFoundSuppression(t *testing.T) {
 	}
 
 	u.notFoundMu.Lock()
-	u.notFound["svc"] = "sha256:deadbeef"
+	u.notFound["svc/api:latest"] = "sha256:deadbeef"
 	u.notFoundMu.Unlock()
 
 	nf := u.NotFoundServices()
-	if nf["svc"] != "sha256:deadbeef" {
-		t.Errorf("want sha256:deadbeef, got %q", nf["svc"])
+	if nf["svc/api:latest"] != "sha256:deadbeef" {
+		t.Errorf("want sha256:deadbeef, got %q", nf["svc/api:latest"])
+	}
+}
+
+func TestUnblockService_ClearsAllImagesForService(t *testing.T) {
+	metrics := NewMetrics()
+	u := &Updater{
+		blocked:   make(map[string]string),
+		blockedMu: sync.RWMutex{},
+		metrics:   metrics,
+	}
+
+	u.blockedMu.Lock()
+	u.blocked["svc/api:latest"] = "sha256:aaa"
+	u.blocked["svc/worker:latest"] = "sha256:bbb"
+	u.blockedMu.Unlock()
+
+	if !u.UnblockService("svc") {
+		t.Error("UnblockService should return true when images are blocked")
+	}
+	if len(u.BlockedDigests()) != 0 {
+		t.Errorf("all images should be unblocked, got %v", u.BlockedDigests())
+	}
+}
+
+func TestUnblockService_DoesNotClearOtherService(t *testing.T) {
+	metrics := NewMetrics()
+	u := &Updater{
+		blocked:   make(map[string]string),
+		blockedMu: sync.RWMutex{},
+		metrics:   metrics,
+	}
+
+	u.blockedMu.Lock()
+	u.blocked["svc-a/api:latest"] = "sha256:aaa"
+	u.blockedMu.Unlock()
+
+	if u.UnblockService("svc-b") {
+		t.Error("UnblockService should return false when service is not blocked")
+	}
+	if u.BlockedDigests()["svc-a/api:latest"] != "sha256:aaa" {
+		t.Error("svc-a should remain blocked")
+	}
+}
+
+func TestBlockedDigests_MultiImage(t *testing.T) {
+	metrics := NewMetrics()
+	u := &Updater{
+		blocked:   make(map[string]string),
+		blockedMu: sync.RWMutex{},
+		metrics:   metrics,
+	}
+
+	u.blockedMu.Lock()
+	u.blocked["svc/api:latest"] = "sha256:aaa"
+	u.blocked["svc/worker:latest"] = "sha256:bbb"
+	u.blockedMu.Unlock()
+
+	blocked := u.BlockedDigests()
+	if len(blocked) != 2 {
+		t.Errorf("want 2 blocked entries, got %d", len(blocked))
+	}
+
+	u.UnblockService("svc")
+	if len(u.BlockedDigests()) != 0 {
+		t.Error("all blocked entries should be cleared after UnblockService")
 	}
 }

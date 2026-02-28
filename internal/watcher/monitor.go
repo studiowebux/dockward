@@ -95,45 +95,63 @@ func (m *Monitor) pollAll(ctx context.Context) {
 }
 
 func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
-	containerID := findRunningContainerID(ctx, m.docker, svc)
-	if containerID == "" {
+	containerIDs := findRunningContainerIDs(ctx, m.docker, svc)
+	if len(containerIDs) == 0 {
 		return
 	}
-
-	raw, err := m.docker.ContainerStats(ctx, containerID)
-	if err != nil {
-		log.Printf("[monitor] %s: stats error: %v", svc.Name, err)
-		return
-	}
-
-	stats := ServiceStats{
-		CPUPercent:    raw.CPUPercent,
-		MemoryPercent: raw.MemoryPercent,
-		MemoryUsageMB: float64(raw.MemoryUsage) / 1024 / 1024,
-		MemoryLimitMB: float64(raw.MemoryLimit) / 1024 / 1024,
-	}
-
-	m.latestMu.Lock()
-	m.latest[svc.Name] = stats
-	m.latestMu.Unlock()
 
 	cooldown := time.Duration(svc.HealCooldown) * time.Second
 	if cooldown <= 0 {
 		cooldown = 5 * time.Minute
 	}
 
-	if svc.CPUThreshold > 0 && stats.CPUPercent > svc.CPUThreshold {
-		m.maybeAlert(ctx, svc, "cpu", cooldown,
-			fmt.Sprintf("CPU usage %.1f%% exceeds threshold %.1f%%", stats.CPUPercent, svc.CPUThreshold),
-		)
+	// Collect per-container stats and aggregate for display.
+	var totalCPU float64
+	var totalMemUsage, totalMemLimit uint64
+
+	for _, id := range containerIDs {
+		raw, err := m.docker.ContainerStats(ctx, id)
+		if err != nil {
+			log.Printf("[monitor] %s: stats error for %s: %v", svc.Name, id, err)
+			continue
+		}
+
+		totalCPU += raw.CPUPercent
+		totalMemUsage += raw.MemoryUsage
+		totalMemLimit += raw.MemoryLimit
+
+		// Per-container threshold alerts use container-scoped cooldown keys.
+		if svc.CPUThreshold > 0 && raw.CPUPercent > svc.CPUThreshold {
+			m.maybeAlert(ctx, svc, "cpu:"+id, cooldown,
+				fmt.Sprintf("Container %s CPU %.1f%% exceeds threshold %.1f%%", id[:12], raw.CPUPercent, svc.CPUThreshold),
+			)
+		}
+
+		if svc.MemoryThreshold > 0 && raw.MemoryLimit > 0 {
+			memPct := float64(raw.MemoryUsage) / float64(raw.MemoryLimit) * 100
+			if memPct > svc.MemoryThreshold {
+				m.maybeAlert(ctx, svc, "memory:"+id, cooldown,
+					fmt.Sprintf("Container %s memory %.1f%% (%.0f MB / %.0f MB) exceeds threshold %.1f%%",
+						id[:12], memPct, float64(raw.MemoryUsage)/1024/1024, float64(raw.MemoryLimit)/1024/1024, svc.MemoryThreshold),
+				)
+			}
+		}
 	}
 
-	if svc.MemoryThreshold > 0 && stats.MemoryPercent > svc.MemoryThreshold {
-		m.maybeAlert(ctx, svc, "memory", cooldown,
-			fmt.Sprintf("Memory usage %.1f%% (%.0f MB / %.0f MB) exceeds threshold %.1f%%",
-				stats.MemoryPercent, stats.MemoryUsageMB, stats.MemoryLimitMB, svc.MemoryThreshold),
-		)
+	// Aggregate stats stored for the status API.
+	var memPct float64
+	if totalMemLimit > 0 {
+		memPct = float64(totalMemUsage) / float64(totalMemLimit) * 100
 	}
+
+	m.latestMu.Lock()
+	m.latest[svc.Name] = ServiceStats{
+		CPUPercent:    totalCPU,
+		MemoryPercent: memPct,
+		MemoryUsageMB: float64(totalMemUsage) / 1024 / 1024,
+		MemoryLimitMB: float64(totalMemLimit) / 1024 / 1024,
+	}
+	m.latestMu.Unlock()
 }
 
 func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric string, cooldown time.Duration, message string) {
@@ -165,6 +183,32 @@ func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric str
 	}); err != nil {
 		log.Printf("[monitor] %s: audit write error: %v", svc.Name, err)
 	}
+}
+
+// findRunningContainerIDs returns all running container IDs for a service.
+// Used by the monitor to collect stats across multi-container services.
+func findRunningContainerIDs(ctx context.Context, dc *docker.Client, svc config.Service) []string {
+	var ids []string
+
+	if svc.ComposeProject != "" {
+		containers, err := dc.ListContainersByProject(ctx, svc.ComposeProject)
+		if err == nil {
+			for _, c := range containers {
+				if c.State == "running" {
+					ids = append(ids, c.ID)
+				}
+			}
+		}
+	}
+
+	if len(ids) == 0 && svc.ContainerName != "" {
+		// Fallback to container_name for heal-only services with no compose project.
+		if id := findRunningContainerID(ctx, dc, svc); id != "" {
+			ids = append(ids, id)
+		}
+	}
+
+	return ids
 }
 
 // findRunningContainerID returns the first running container ID for a service,

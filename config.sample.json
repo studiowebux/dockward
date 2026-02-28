@@ -45,7 +45,8 @@
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
+      "silent": false,
       "compose_files": [
         "/srv/myapp/docker-compose.yml"
       ],
@@ -62,8 +63,8 @@
       "memory_threshold": 85
     },
     {
-      "name": "myapp-with-override",
-      "image": "myapp:latest",
+      "name": "myapp-multi",
+      "images": ["api:latest", "worker:latest"],
       "compose_files": [
         "/srv/myapp/docker-compose.yml",
         "/srv/myapp/docker-compose.override.yml"
@@ -76,7 +77,6 @@
     },
     {
       "name": "proxy",
-      "image": "",
       "compose_files": [
         "/srv/proxy/docker-compose.yml"
       ],

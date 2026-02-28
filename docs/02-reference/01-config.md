@@ -126,9 +126,9 @@ Array of service definitions. Each service is independent — fields used depend
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | required | Unique service identifier used in API paths, metrics labels, and notifications |
-| `image` | string | — | Registry image reference (e.g. `myapp:latest`). Required when `auto_update: true` |
+| `images` | []string | — | Registry image references (e.g. `["api:latest", "worker:latest"]`). Required when `auto_update: true`. One deploy per compose project when any image changes |
+| `silent` | boolean | `false` | Skip validation and monitoring for this service. Use for internal or externally-managed services referenced for healer-only purposes |
 | `compose_files` | []string | — | Absolute paths to compose files, applied in order. Required when `auto_update: true` |
-| `compose_file` | string | — | Deprecated singular form. Promoted to `compose_files` at load time. Still accepted |
 | `compose_project` | string | — | Docker Compose project name (`-p` flag). Required when `auto_update: true` |
 | `container_name` | string | — | Container name for event matching. Used for standalone containers or as fallback |
 | `env_file` | string | — | Path to a `.env` file. Variables are loaded into the process environment before running compose, making them available for `${VAR}` interpolation in compose files |
@@ -148,10 +148,10 @@ Array of service definitions. Each service is independent — fields used depend
 Validation failures at startup cause dockward to exit with a non-zero status. Check `journalctl -u dockward` for the error message.
 :::
 
-- `auto_update: true` requires `image`, at least one entry in `compose_files` (or the deprecated `compose_file`), and `compose_project`
+- `auto_update: true` requires at least one entry in `images`, at least one entry in `compose_files`, and `compose_project`
 - `auto_heal: true` requires at least one of `compose_project` or `container_name` for Docker event matching
 - `name` must be unique across all service definitions
-- `compose_file` (singular) is accepted but deprecated; prefer `compose_files`
+- `silent: true` skips all validation rules for the service
 
 ## Full Example
 
@@ -197,7 +197,7 @@ Validation failures at startup cause dockward to exit with a non-zero status. Ch
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
       "compose_files": [
         "/srv/myapp/docker-compose.yml",
         "/srv/myapp/docker-compose.override.yml"
