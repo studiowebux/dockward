@@ -11,7 +11,7 @@ tags:
 
 # Notifications Reference
 
-Dockward sends notifications on significant events — deploys, rollbacks, heal restarts, and critical failures. All channels are optional. Multiple channels can be active simultaneously.
+Dockward sends notifications on significant events — deploys, rollbacks, heal restarts, resource alerts, and critical failures. All channels are optional. Multiple channels can be active simultaneously.
 
 For configuration syntax see [Config Reference](01-config.md).
 
@@ -84,16 +84,22 @@ The `body` field is rendered as a Go `text/template`. All fields below are avail
 
 ## Events
 
-| Event | Level | Trigger |
-|-------|-------|---------|
-| `updated` | `info` | Successful image deploy |
-| `rolled_back` | `warning` | Rollback after failed deploy |
-| `unhealthy` | `warning` | Container reported unhealthy by Docker |
-| `restarted` | `info` | Auto-heal restart succeeded |
-| `critical` | `critical` | Restart exceeded `heal_max_restarts` or rollback failed |
-| `healthy` | `info` | Container recovered to healthy state |
-| `died` | `warning` | Container exited unexpectedly |
-| `not_found` | `warning` | Container not found during health poll |
+| Event | Level | Source | Trigger |
+|-------|-------|--------|---------|
+| `updated` | `info` | updater | Successful image deploy |
+| `rolled_back` | `warning` | updater | Rollback succeeded — previous image restored |
+| `rolled_back` | `critical` | updater | Rollback failed — could not retag or compose up failed |
+| `compose_drift` | `info` | updater | Compose file changed; redeployed without image pull |
+| `started` | `warning` | updater | Containers not found with correct image; compose project started |
+| `not_found` | `warning` | updater | Local image not found; suppressed until registry digest changes |
+| `error` | `critical` | updater | Persistent poll error (registry unreachable, compose failure) |
+| `unhealthy` | `warning` | healer | Container reported unhealthy by Docker |
+| `restarting` | `warning` | healer | Auto-heal restart attempt in progress |
+| `restarted` | `warning` | healer | Auto-heal restart completed successfully |
+| `critical` | `critical` | healer | Restart failed, max restarts exceeded, or container still unhealthy after restart |
+| `healthy` | `info` | healer | Container recovered to healthy state |
+| `died` | `critical` | healer | Container exited unexpectedly |
+| `resource_alert` | `warning` | monitor | CPU or memory threshold exceeded |
 
 ## Webhook Example — GitHub Actions Dispatch
 

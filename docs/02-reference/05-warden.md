@@ -22,7 +22,7 @@ dockward --mode warden --config /etc/dockward/warden.json
 
 ## Warden config
 
-`warden.sample.json` is the reference. Fields:
+Fields:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|

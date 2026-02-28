@@ -22,6 +22,7 @@ For a walkthrough with annotated examples, see [Configuration](../01-getting-sta
   "audit": { ... },
   "monitor": { ... },
   "notifications": { ... },
+  "push": { ... },
   "services": [ ... ]
 }
 ```
@@ -119,6 +120,24 @@ Array of custom webhook definitions.
 | `headers` | object | no | Key-value HTTP headers; values support `$ENV_VAR` expansion |
 | `body` | string | no | Request body; Go `text/template` with notification fields |
 
+## `push`
+
+Optional. When `warden_url` is set, every audit entry is forwarded to the warden asynchronously. Push is fire-and-forget — agent operation is not affected by warden availability.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `warden_url` | string | `""` | Warden base URL (e.g. `https://warden.example.com`). Empty disables push |
+| `token` | string | `""` | Bearer token matching the warden's `agents[].token`. `$ENV_VAR` expansion supported |
+| `machine_id` | string | `""` | Identifier shown in the warden dashboard (e.g. `ovh-01`) |
+
+```json
+"push": {
+  "warden_url": "https://warden.example.com",
+  "token": "$DOCKWARD_PUSH_TOKEN",
+  "machine_id": "ovh-01"
+}
+```
+
 ## `services`
 
 Array of service definitions. Each service is independent — fields used depend on which modes are enabled.
@@ -193,6 +212,11 @@ Validation failures at startup cause dockward to exit with a non-zero status. Ch
         "body": "{\"service\":\"{{ .Service }}\",\"event\":\"{{ .Event }}\"}"
       }
     ]
+  },
+  "push": {
+    "warden_url": "https://warden.example.com",
+    "token": "$DOCKWARD_PUSH_TOKEN",
+    "machine_id": "ovh-01"
   },
   "services": [
     {

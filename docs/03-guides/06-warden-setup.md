@@ -51,7 +51,7 @@ Use the interactive wizard:
 dockward warden-config --config /etc/dockward/warden.json
 ```
 
-Or use `warden.sample.json` as a starting point:
+Example config:
 
 ```json
 {
