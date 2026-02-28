@@ -96,6 +96,12 @@ Watch and restart any container without a registry or compose setup:
     "url": "http://localhost:5000",
     "poll_interval": 300
   },
+  "monitor": {
+    "stats_interval": 30
+  },
+  "api": {
+    "port": "9090"
+  },
   "services": [
     {
       "name": "myapp",
@@ -105,7 +111,8 @@ Watch and restart any container without a registry or compose setup:
       "auto_update": true,
       "auto_heal": true,
       "health_grace": 60,
-      "heal_cooldown": 300
+      "heal_cooldown": 300,
+      "heal_max_restarts": 3
     }
   ]
 }
