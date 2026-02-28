@@ -652,6 +652,10 @@ form{display:inline}
 </table>
 
 <script>
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 var es = new EventSource('/ui/events');
 es.onmessage = function(evt) {
   var e;
@@ -660,11 +664,11 @@ es.onmessage = function(evt) {
   if (!tbody) return;
   var ts = e.timestamp ? e.timestamp.replace('T',' ').slice(0,19) : '';
   var row = '<tr>' +
-    '<td style="white-space:nowrap;color:#444">' + ts + '</td>' +
-    '<td style="color:#666">' + (e.service||'') + '</td>' +
-    '<td>' + (e.event||'') + '</td>' +
-    '<td class="' + (e.level||'') + '">' + (e.level||'') + '</td>' +
-    '<td style="color:#666">' + (e.message||'') + '</td>' +
+    '<td style="white-space:nowrap;color:#444">' + esc(ts) + '</td>' +
+    '<td style="color:#666">' + esc(e.service||'') + '</td>' +
+    '<td>' + esc(e.event||'') + '</td>' +
+    '<td class="' + esc(e.level||'') + '">' + esc(e.level||'') + '</td>' +
+    '<td style="color:#666">' + esc(e.message||'') + '</td>' +
     '</tr>';
   tbody.insertAdjacentHTML('afterbegin', row);
   while (tbody.rows.length > 50) { tbody.deleteRow(-1); }
@@ -680,14 +684,14 @@ function refreshStatus() {
       var cpu = (s.cpu_percent || s.memory_percent)
         ? Math.round(s.cpu_percent) + '% / ' + Math.round(s.memory_percent) + '%'
         : '--';
-      var actions = '<form method="POST" action="/trigger/' + s.name + '?redirect=ui"><button type="submit">Trigger</button></form>';
+      var actions = '<form method="POST" action="/trigger/' + esc(s.name) + '?redirect=ui"><button type="submit">Trigger</button></form>';
       if (s.blocked) {
-        actions += ' <form method="POST" action="/unblock/' + s.name + '"><button type="submit">Unblock</button></form>';
+        actions += ' <form method="POST" action="/unblock/' + esc(s.name) + '"><button type="submit">Unblock</button></form>';
       }
       rows += '<tr>' +
-        '<td>' + s.name + '</td>' +
-        '<td class="' + s.status + '">' + s.status + '</td>' +
-        '<td>' + cpu + '</td>' +
+        '<td>' + esc(s.name) + '</td>' +
+        '<td class="' + esc(s.status) + '">' + esc(s.status) + '</td>' +
+        '<td>' + esc(cpu) + '</td>' +
         '<td>' + (s.updates_total||0) + '</td>' +
         '<td>' + (s.rollbacks_total||0) + '</td>' +
         '<td>' + (s.restarts_total||0) + '</td>' +

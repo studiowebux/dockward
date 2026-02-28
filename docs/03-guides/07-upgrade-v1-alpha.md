@@ -45,6 +45,9 @@ scp dockward-linux-amd64 user@your-server:/tmp/dockward-new
 # Verify the new binary runs
 /tmp/dockward-new --version   # should print v1.0.0-alpha.1
 
+# Back up the running binary before touching anything
+sudo cp /usr/local/bin/dockward /usr/local/bin/dockward.bak
+
 # Stop the running agent
 sudo systemctl stop dockward
 
