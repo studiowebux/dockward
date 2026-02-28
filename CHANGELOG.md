@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.2] - 2026-02-28
+
+### Fixed
+- Health status shows "unknown" on boot until a Docker event fires; healer now inspects all configured containers at startup to seed health gauges immediately
+- CPU and memory always show "--" when no alert thresholds are configured; stats are now collected for all running containers on every poll cycle regardless of threshold config
+- Monitor stats show "--" for the entire first poll interval after startup; monitor now polls immediately on start before entering the ticker loop
+- Trigger and Unblock buttons caused an infinite browser spinner by triggering a page reload that reconnected the SSE stream; replaced form submissions with `fetch` calls (no reload, no reconnect)
+- Table headers and "unknown" status were near-invisible in dark mode due to low-contrast color choices; fixed with CSS custom properties
+
+### Added
+- Dark/light theme toggle in the agent web UI; preference persisted to `localStorage`; respects `prefers-color-scheme` as default
+- `--verbose` flag: noisy healer skip, cooldown, and deploy-guard log lines are suppressed by default and only emitted when `--verbose` is set
+- Quick start guide (`docs/01-getting-started/00-quick-start.md`)
+- Minimaldoc homepage nav entry
+
+### Removed
+- Stale `docs/03-guides/07-upgrade-v1-alpha.md` upgrade guide
+
 ## [1.0.0-alpha.1] - 2026-02-28
 
 ### Added
