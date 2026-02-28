@@ -14,6 +14,19 @@ import (
 	"github.com/studiowebux/dockward/internal/notify"
 )
 
+// verboseMode enables debug-level log output. Set via SetVerbose in main.
+var verboseMode bool
+
+// SetVerbose enables or disables debug-level logging for the watcher package.
+func SetVerbose(v bool) { verboseMode = v }
+
+// debugf logs only when verbose mode is on.
+func debugf(format string, args ...any) {
+	if verboseMode {
+		log.Printf(format, args...)
+	}
+}
+
 // Healer listens for Docker health events and restarts unhealthy containers.
 type Healer struct {
 	cfg        *config.Config
@@ -63,9 +76,32 @@ func NewHealer(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatc
 // Run starts the Docker event stream listener. Blocks until ctx is cancelled.
 func (h *Healer) Run(ctx context.Context) {
 	log.Printf("[healer] listening for Docker health events")
+	h.seedHealthFromInspect(ctx)
 	h.docker.StreamEvents(ctx, func(event docker.Event) {
 		h.handleEvent(ctx, event)
 	})
+}
+
+// seedHealthFromInspect inspects all configured service containers at startup
+// to pre-populate health gauges before the first Docker event fires.
+func (h *Healer) seedHealthFromInspect(ctx context.Context) {
+	for _, svc := range h.cfg.Services {
+		id := findRunningContainerID(ctx, h.docker, svc)
+		if id == "" {
+			continue
+		}
+		info, err := h.docker.InspectContainer(ctx, id)
+		if err != nil {
+			log.Printf("[healer] %s: boot inspect error: %v", svc.Name, err)
+			continue
+		}
+		if info.State.Health == nil {
+			continue
+		}
+		healthy := info.State.Health.Status == "healthy"
+		h.metrics.SetHealthy(svc.Name, healthy)
+		log.Printf("[healer] %s: boot health: %s", svc.Name, info.State.Health.Status)
+	}
 }
 
 func (h *Healer) handleEvent(ctx context.Context, event docker.Event) {
@@ -92,7 +128,7 @@ func (h *Healer) handleEvent(ctx context.Context, event docker.Event) {
 func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, containerName, containerID string) {
 	// Skip if this container is in a deploy grace period (updater handles rollback).
 	if h.updater.IsDeploying(svc.Name) {
-		log.Printf("[healer] %s: unhealthy during deploy grace period, skipping (updater handles rollback)", svc.Name)
+		debugf("[healer] %s: unhealthy during deploy grace period, skipping (updater handles rollback)", svc.Name)
 		return
 	}
 
@@ -136,7 +172,7 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 
 	// Check cooldown.
 	if h.inCooldown(containerName) {
-		log.Printf("[healer] %s: in cooldown, skipping restart", svc.Name)
+		debugf("[healer] %s: in cooldown, skipping restart", svc.Name)
 		return
 	}
 
@@ -237,7 +273,7 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 	// handleHealthy may have already sent the recovery notification and cleared
 	// degraded state if the healthy event arrived before this goroutine ran.
 	if !h.isDegraded(svc.Name) {
-		log.Printf("[healer] %s: recovery already handled by healthy event", svc.Name)
+		debugf("[healer] %s: recovery already handled by healthy event", svc.Name)
 		return
 	}
 
@@ -292,7 +328,7 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 
 	// Skip notification if the updater is mid-deploy — it sends its own success alert.
 	if h.updater.IsDeploying(svc.Name) {
-		log.Printf("[healer] %s: healthy during deploy, skipping notification (updater handles it)", svc.Name)
+		debugf("[healer] %s: healthy during deploy, skipping notification (updater handles it)", svc.Name)
 		return
 	}
 

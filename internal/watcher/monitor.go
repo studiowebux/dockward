@@ -57,6 +57,9 @@ func (m *Monitor) Run(ctx context.Context) {
 	interval := time.Duration(m.cfg.Registry.PollInterval) * time.Second
 	log.Printf("[monitor] polling resources every %s", interval)
 
+	// Poll immediately so stats are available before the first tick.
+	m.pollAll(ctx)
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -87,15 +90,12 @@ func (m *Monitor) pollAll(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if svc.CPUThreshold <= 0 && svc.MemoryThreshold <= 0 {
-			continue
-		}
 		m.checkService(ctx, svc)
 	}
 }
 
 func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
-	containerID := m.findContainer(ctx, svc)
+	containerID := findRunningContainerID(ctx, m.docker, svc)
 	if containerID == "" {
 		return
 	}
@@ -167,11 +167,12 @@ func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric str
 	}
 }
 
-// findContainer returns the first running container ID for a service,
+// findRunningContainerID returns the first running container ID for a service,
 // matching by compose project label or container name.
-func (m *Monitor) findContainer(ctx context.Context, svc config.Service) string {
+// Package-level so both Monitor and Healer can use it.
+func findRunningContainerID(ctx context.Context, dc *docker.Client, svc config.Service) string {
 	if svc.ComposeProject != "" {
-		containers, err := m.docker.ListContainersByProject(ctx, svc.ComposeProject)
+		containers, err := dc.ListContainersByProject(ctx, svc.ComposeProject)
 		if err == nil {
 			for _, c := range containers {
 				if c.State == "running" {
@@ -183,7 +184,7 @@ func (m *Monitor) findContainer(ctx context.Context, svc config.Service) string 
 
 	if svc.ContainerName != "" {
 		filter := url.QueryEscape(fmt.Sprintf(`{"name":["%s"]}`, svc.ContainerName))
-		containers, err := m.docker.ListContainersFiltered(ctx, filter)
+		containers, err := dc.ListContainersFiltered(ctx, filter)
 		if err == nil {
 			for _, c := range containers {
 				if c.State == "running" {

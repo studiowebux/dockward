@@ -227,7 +227,8 @@ type serviceStatus struct {
 	RollbacksTotal int64 `json:"rollbacks_total"`
 	RestartsTotal  int64 `json:"restarts_total"`
 	FailuresTotal  int64 `json:"failures_total"`
-	// Resource usage — populated when cpu_threshold or memory_threshold is configured.
+	// Resource usage — populated each monitor poll cycle for all running containers.
+	HasStats      bool    `json:"has_stats"`
 	CPUPercent    float64 `json:"cpu_percent,omitempty"`
 	MemoryPercent float64 `json:"memory_percent,omitempty"`
 	MemoryUsageMB float64 `json:"memory_usage_mb,omitempty"`
@@ -340,6 +341,7 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 		s.FailuresTotal  = c.Failures
 	}
 	if st, ok := snap.stats[svc.Name]; ok {
+		s.HasStats      = true
 		s.CPUPercent    = st.CPUPercent
 		s.MemoryPercent = st.MemoryPercent
 		s.MemoryUsageMB = st.MemoryUsageMB
@@ -593,26 +595,52 @@ const uiHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>Dockward</title>
+<script>
+(function(){
+  var t=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');
+  if(t==='light')document.documentElement.setAttribute('data-theme','light');
+})();
+</script>
 <style>
+:root{
+  --bg:#0f0f0f;--surface:#161616;--border:#2a2a2a;
+  --text:#d0d0d0;--text-muted:#888;--text-label:#999;--text-dim:#666;
+  --ok:#4caf50;--warn:#ffa726;--err:#ef5350;--info:#42a5f5;--unknown:#888;
+  --btn-bg:#1c1c1c;--btn-border:#333;--btn-text:#999;
+  --btn-hover-bg:#252525;--btn-hover-text:#ccc;
+  --row-hover:#131313;
+}
+[data-theme="light"]{
+  --bg:#f4f4f4;--surface:#fff;--border:#e0e0e0;
+  --text:#1a1a1a;--text-muted:#555;--text-label:#444;--text-dim:#888;
+  --ok:#2e7d32;--warn:#e65100;--err:#c62828;--info:#1565c0;--unknown:#777;
+  --btn-bg:#fff;--btn-border:#ccc;--btn-text:#555;
+  --btn-hover-bg:#f0f0f0;--btn-hover-text:#111;
+  --row-hover:#fafafa;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:monospace;font-size:13px;background:#0f0f0f;color:#c8c8c8;padding:24px 32px}
-header{margin-bottom:24px;color:#555;font-size:12px}
-h2{font-size:11px;font-weight:normal;color:#444;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+body{font-family:monospace;font-size:13px;background:var(--bg);color:var(--text);padding:24px 32px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;color:var(--text-muted);font-size:12px}
+h2{font-size:11px;font-weight:normal;color:var(--text-label);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
 table{width:100%;border-collapse:collapse;margin-bottom:32px}
-th{text-align:left;color:#3a3a3a;font-weight:normal;padding:5px 12px;border-bottom:1px solid #1c1c1c;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
-td{padding:6px 12px;border-bottom:1px solid #161616;vertical-align:middle}
-tr:hover td{background:#121212}
-.ok{color:#4caf50}.unhealthy{color:#ef5350}.deploying{color:#42a5f5}
-.degraded{color:#ffa726}.exhausted{color:#ef5350}.blocked{color:#ffa726}
-.not_found{color:#555}.errored{color:#ef5350}.unknown{color:#333}
-.info{color:#42a5f5}.warning{color:#ffa726}.error{color:#ef5350}
-button{background:#171717;color:#666;border:1px solid #222;padding:3px 10px;cursor:pointer;font-family:monospace;font-size:11px}
-button:hover{background:#1e1e1e;color:#bbb;border-color:#333}
-form{display:inline}
+th{text-align:left;color:var(--text-label);font-weight:normal;padding:5px 12px;border-bottom:1px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+td{padding:6px 12px;border-bottom:1px solid var(--border);vertical-align:middle;color:var(--text)}
+tr:hover td{background:var(--row-hover)}
+.ok{color:var(--ok)}.unhealthy{color:var(--err)}.deploying{color:var(--info)}
+.degraded{color:var(--warn)}.exhausted{color:var(--err)}.blocked{color:var(--warn)}
+.not_found{color:var(--text-muted)}.errored{color:var(--err)}.unknown{color:var(--unknown)}
+.info{color:var(--info)}.warning{color:var(--warn)}.error{color:var(--err)}.critical{color:var(--err)}
+button{background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border);padding:3px 10px;cursor:pointer;font-family:monospace;font-size:11px}
+button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
+#theme-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;font-family:monospace;font-size:11px;padding:0}
+#theme-toggle:hover{color:var(--text)}
 </style>
 </head>
 <body>
-<header>Dockward &mdash; {{.Hostname}} &mdash; uptime {{.Uptime}}</header>
+<header>
+  <span>Dockward &mdash; {{.Hostname}} &mdash; uptime {{.Uptime}}</span>
+  <button id="theme-toggle" onclick="toggleTheme()">[light]</button>
+</header>
 
 <h2>Services</h2>
 <table>
@@ -622,13 +650,13 @@ form{display:inline}
 <tr>
   <td>{{.Name}}</td>
   <td class="{{.Status}}">{{.Status}}</td>
-  <td>{{if or .CPUPercent .MemoryPercent}}{{printf "%.0f" .CPUPercent}}% / {{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
+  <td>{{if .HasStats}}{{printf "%.0f" .CPUPercent}}% / {{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
   <td>{{.UpdatesTotal}}</td>
   <td>{{.RollbacksTotal}}</td>
   <td>{{.RestartsTotal}}</td>
   <td>
-    <form method="POST" action="/trigger/{{.Name}}?redirect=ui"><button type="submit">Trigger</button></form>
-    {{if .Blocked}}&nbsp;<form method="POST" action="/unblock/{{.Name}}"><button type="submit">Unblock</button></form>{{end}}
+    <button onclick="triggerService('{{.Name}}')">Trigger</button>
+    {{if .Blocked}}&nbsp;<button onclick="unblockService('{{.Name}}')">Unblock</button>{{end}}
   </td>
 </tr>
 {{end}}
@@ -641,67 +669,79 @@ form{display:inline}
 <tbody id="events-body">
 {{range .Events}}
 <tr>
-  <td style="white-space:nowrap;color:#444">{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
-  <td style="color:#666">{{.Service}}</td>
+  <td style="white-space:nowrap;color:var(--text-dim)">{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
+  <td style="color:var(--text-muted)">{{.Service}}</td>
   <td>{{.Event}}</td>
   <td class="{{.Level}}">{{.Level}}</td>
-  <td style="color:#666">{{.Message}}</td>
+  <td style="color:var(--text-muted)">{{.Message}}</td>
 </tr>
 {{end}}
 </tbody>
 </table>
 
 <script>
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function triggerService(name){
+  fetch('/trigger/'+encodeURIComponent(name),{method:'POST'}).catch(function(){});
+}
+function unblockService(name){
+  fetch('/unblock/'+encodeURIComponent(name),{method:'POST'}).catch(function(){});
 }
 
-var es = new EventSource('/ui/events');
-es.onmessage = function(evt) {
-  var e;
-  try { e = JSON.parse(evt.data); } catch(_) { return; }
-  var tbody = document.getElementById('events-body');
-  if (!tbody) return;
-  var ts = e.timestamp ? e.timestamp.replace('T',' ').slice(0,19) : '';
-  var row = '<tr>' +
-    '<td style="white-space:nowrap;color:#444">' + esc(ts) + '</td>' +
-    '<td style="color:#666">' + esc(e.service||'') + '</td>' +
-    '<td>' + esc(e.event||'') + '</td>' +
-    '<td class="' + esc(e.level||'') + '">' + esc(e.level||'') + '</td>' +
-    '<td style="color:#666">' + esc(e.message||'') + '</td>' +
+function toggleTheme(){
+  var cur=document.documentElement.getAttribute('data-theme')||'dark';
+  var next=cur==='light'?'dark':'light';
+  document.documentElement.setAttribute('data-theme',next);
+  localStorage.setItem('theme',next);
+  document.getElementById('theme-toggle').textContent=next==='light'?'[dark]':'[light]';
+}
+(function(){
+  var saved=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');
+  document.getElementById('theme-toggle').textContent=saved==='light'?'[dark]':'[light]';
+})();
+
+var es=new EventSource('/ui/events');
+es.onmessage=function(evt){
+  var e;try{e=JSON.parse(evt.data);}catch(_){return;}
+  var tbody=document.getElementById('events-body');
+  if(!tbody)return;
+  var ts=e.timestamp?e.timestamp.replace('T',' ').slice(0,19):'';
+  var row='<tr>'+
+    '<td style="white-space:nowrap;color:var(--text-dim)">'+esc(ts)+'</td>'+
+    '<td style="color:var(--text-muted)">'+esc(e.service||'')+'</td>'+
+    '<td>'+esc(e.event||'')+'</td>'+
+    '<td class="'+esc(e.level||'')+'">'+esc(e.level||'')+'</td>'+
+    '<td style="color:var(--text-muted)">'+esc(e.message||'')+'</td>'+
     '</tr>';
-  tbody.insertAdjacentHTML('afterbegin', row);
-  while (tbody.rows.length > 50) { tbody.deleteRow(-1); }
+  tbody.insertAdjacentHTML('afterbegin',row);
+  while(tbody.rows.length>50){tbody.deleteRow(-1);}
 };
 
-function refreshStatus() {
-  fetch('/status').then(function(r) { return r.json(); }).then(function(data) {
-    var tbody = document.getElementById('status-body');
-    if (!tbody) return;
-    var rows = '';
-    for (var i = 0; i < data.services.length; i++) {
-      var s = data.services[i];
-      var cpu = (s.cpu_percent || s.memory_percent)
-        ? Math.round(s.cpu_percent) + '% / ' + Math.round(s.memory_percent) + '%'
-        : '--';
-      var actions = '<form method="POST" action="/trigger/' + esc(s.name) + '?redirect=ui"><button type="submit">Trigger</button></form>';
-      if (s.blocked) {
-        actions += ' <form method="POST" action="/unblock/' + esc(s.name) + '"><button type="submit">Unblock</button></form>';
-      }
-      rows += '<tr>' +
-        '<td>' + esc(s.name) + '</td>' +
-        '<td class="' + esc(s.status) + '">' + esc(s.status) + '</td>' +
-        '<td>' + esc(cpu) + '</td>' +
-        '<td>' + (s.updates_total||0) + '</td>' +
-        '<td>' + (s.rollbacks_total||0) + '</td>' +
-        '<td>' + (s.restarts_total||0) + '</td>' +
-        '<td>' + actions + '</td>' +
+function refreshStatus(){
+  fetch('/status').then(function(r){return r.json();}).then(function(data){
+    var tbody=document.getElementById('status-body');
+    if(!tbody)return;
+    var rows='';
+    for(var i=0;i<data.services.length;i++){
+      var s=data.services[i];
+      var cpu=s.has_stats?Math.round(s.cpu_percent)+'% / '+Math.round(s.memory_percent)+'%':'--';
+      var actions='<button onclick="triggerService(\''+esc(s.name)+'\')">Trigger</button>';
+      if(s.blocked){actions+=' <button onclick="unblockService(\''+esc(s.name)+'\')">Unblock</button>';}
+      rows+='<tr>'+
+        '<td>'+esc(s.name)+'</td>'+
+        '<td class="'+esc(s.status)+'">'+esc(s.status)+'</td>'+
+        '<td>'+esc(cpu)+'</td>'+
+        '<td>'+(s.updates_total||0)+'</td>'+
+        '<td>'+(s.rollbacks_total||0)+'</td>'+
+        '<td>'+(s.restarts_total||0)+'</td>'+
+        '<td>'+actions+'</td>'+
         '</tr>';
     }
-    tbody.innerHTML = rows;
+    tbody.innerHTML=rows;
   }).catch(function(){});
 }
-setInterval(refreshStatus, 15000);
+setInterval(refreshStatus,15000);
 </script>
 </body>
 </html>`
