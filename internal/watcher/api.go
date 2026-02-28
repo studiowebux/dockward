@@ -681,6 +681,9 @@ button{background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn
 button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
 #theme-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;font-family:monospace;font-size:11px;padding:0}
 #theme-toggle:hover{color:var(--text)}
+.ctrs{margin-top:4px}
+.ctr{display:flex;gap:8px;font-size:11px;color:var(--text-muted);padding:1px 0}
+.ctr-name{min-width:120px}.ctr-state{min-width:60px}
 </style>
 </head>
 <body>
@@ -698,13 +701,13 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
   <td>
     {{.Name}}
     {{if .Containers}}
-    <details style="margin-top:3px">
+    <details data-svc="{{.Name}}" style="margin-top:3px">
       <summary style="cursor:pointer;color:var(--text-muted);font-size:11px">{{len .Containers}} container(s)</summary>
-      <table style="margin-top:4px;width:100%;font-size:11px">
+      <div class="ctrs">
         {{range .Containers}}
-        <tr><td style="color:var(--text-muted);padding:1px 0">{{.Name}}</td><td style="padding:1px 8px">{{.State}}</td><td style="color:var(--text-muted);padding:1px 0">{{.Status}}</td></tr>
+        <div class="ctr"><span class="ctr-name">{{.Name}}</span><span class="ctr-state">{{.State}}</span><span>{{.Status}}</span></div>
         {{end}}
-      </table>
+      </div>
     </details>
     {{end}}
   </td>
@@ -783,6 +786,10 @@ function refreshStatus(){
   fetch('/status').then(function(r){return r.json();}).then(function(data){
     var tbody=document.getElementById('status-body');
     if(!tbody)return;
+    var openDetails={};
+    tbody.querySelectorAll('details[data-svc]').forEach(function(d){
+      if(d.open)openDetails[d.getAttribute('data-svc')]=true;
+    });
     var rows='';
     for(var i=0;i<data.services.length;i++){
       var s=data.services[i];
@@ -791,12 +798,12 @@ function refreshStatus(){
       if(s.blocked){actions+=' <button onclick="unblockService(\''+esc(s.name)+'\')">Unblock</button>';}
       var nameCell=esc(s.name);
       if(s.containers&&s.containers.length){
-        var crows='';
+        var cdivs='';
         for(var j=0;j<s.containers.length;j++){
           var c=s.containers[j];
-          crows+='<tr><td style="color:var(--text-muted);padding:1px 0">'+esc(c.name||'')+'</td><td style="padding:1px 8px">'+esc(c.state||'')+'</td><td style="color:var(--text-muted);padding:1px 0">'+esc(c.status||'')+'</td></tr>';
+          cdivs+='<div class="ctr"><span class="ctr-name">'+esc(c.name||'')+'</span><span class="ctr-state">'+esc(c.state||'')+'</span><span>'+esc(c.status||'')+'</span></div>';
         }
-        nameCell+='\n<details style="margin-top:3px"><summary style="cursor:pointer;color:var(--text-muted);font-size:11px">'+s.containers.length+' container(s)</summary><table style="margin-top:4px;width:100%;font-size:11px">'+crows+'</table></details>';
+        nameCell+='\n<details data-svc="'+esc(s.name)+'" style="margin-top:3px"><summary style="cursor:pointer;color:var(--text-muted);font-size:11px">'+s.containers.length+' container(s)</summary><div class="ctrs">'+cdivs+'</div></details>';
       }
       rows+='<tr>'+
         '<td>'+nameCell+'</td>'+
@@ -811,6 +818,9 @@ function refreshStatus(){
         '</tr>';
     }
     tbody.innerHTML=rows;
+    tbody.querySelectorAll('details[data-svc]').forEach(function(d){
+      if(openDetails[d.getAttribute('data-svc')])d.open=true;
+    });
   }).catch(function(){});
 }
 setInterval(refreshStatus,15000);
