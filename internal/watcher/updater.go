@@ -65,6 +65,11 @@ type Updater struct {
 	// Used by checkComposeDrift to detect spec changes between poll cycles.
 	composeHashes   map[string]string
 	composeHashesMu sync.Mutex
+
+	// deployed maps service name -> deployed image reference, digest, and container uptime.
+	// Updated after each successful deploy and on each poll when image is up to date.
+	deployed   map[string]DeployedInfo
+	deployedMu sync.RWMutex
 }
 
 // NewUpdater creates an image updater.
@@ -82,6 +87,7 @@ func NewUpdater(cfg *config.Config, dc *docker.Client, rc *registry.Client, disp
 		errored:        make(map[string]string),
 		startAttempted: make(map[string]string),
 		composeHashes:  make(map[string]string),
+		deployed:       make(map[string]DeployedInfo),
 	}
 }
 
@@ -329,8 +335,9 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 	// Step 3: Compare.
 	if localDigest == remoteDigest {
 		// Digests match, but verify at least one container is running.
-		_, status := u.findContainerByProject(ctx, svc.ComposeProject)
+		container, status := u.findContainerByProject(ctx, svc.ComposeProject)
 		if status == containerRunning {
+			u.setDeployedInfo(svc.Name, container.Image, localDigest, container.Status)
 			u.startAttemptedMu.Lock()
 			delete(u.startAttempted, svc.Name)
 			u.startAttemptedMu.Unlock()
@@ -409,13 +416,13 @@ func (u *Updater) resolveLocalDigest(ctx context.Context, svc config.Service, re
 	}
 
 	// Strategy 2: resolve via running container's image ID.
-	containerID, status := u.findContainerByProject(ctx, svc.ComposeProject)
+	container, status := u.findContainerByProject(ctx, svc.ComposeProject)
 	if status != containerRunning {
 		log.Printf("[updater] %s: no running container for fallback digest resolution", svc.Name)
 		return ""
 	}
 
-	info, err := u.docker.InspectContainer(ctx, containerID)
+	info, err := u.docker.InspectContainer(ctx, container.ID)
 	if err != nil {
 		log.Printf("[updater] %s: container inspect failed during fallback: %v", svc.Name, err)
 		return ""
@@ -489,7 +496,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		case <-ticker.C:
 		}
 
-		containerID, cStatus := u.findContainerByProject(ctx, svc.ComposeProject)
+		container, cStatus := u.findContainerByProject(ctx, svc.ComposeProject)
 		if cStatus == containerNone {
 			if time.Now().After(deadline) {
 				log.Printf("[updater] %s: container not found after grace period, rolling back", svc.Name)
@@ -499,7 +506,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 			continue // Container may be starting up.
 		}
 
-		info, err := u.docker.InspectContainer(ctx, containerID)
+		info, err := u.docker.InspectContainer(ctx, container.ID)
 		if err != nil {
 			log.Printf("[updater] %s: inspect failed during health poll: %v", svc.Name, err)
 			if time.Now().After(deadline) {
@@ -512,7 +519,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		// No healthcheck configured: success if running.
 		if info.State.Health == nil {
 			if info.State.Running {
-				u.onDeploySuccess(ctx, svc, oldDigest, newDigest, info.ContainerName(), registryPrefix)
+				u.onDeploySuccess(ctx, svc, oldDigest, newDigest, info.ContainerName(), registryPrefix, info.Config.Image)
 				return
 			}
 			if time.Now().After(deadline) {
@@ -524,7 +531,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 
 		switch info.State.Health.Status {
 		case "healthy":
-			u.onDeploySuccess(ctx, svc, oldDigest, newDigest, info.ContainerName(), registryPrefix)
+			u.onDeploySuccess(ctx, svc, oldDigest, newDigest, info.ContainerName(), registryPrefix, info.Config.Image)
 			return
 		case "unhealthy":
 			reason := info.LastHealthOutput()
@@ -543,10 +550,11 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 	}
 }
 
-func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, oldDigest, newDigest, containerName, registryPrefix string) {
+func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, oldDigest, newDigest, containerName, registryPrefix, imageRef string) {
 	log.Printf("[updater] %s: deployed successfully", svc.Name)
 	u.metrics.IncUpdates(svc.Name)
 	u.metrics.SetHealthy(svc.Name, true)
+	u.setDeployedInfo(svc.Name, imageRef, newDigest, "")
 	u.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
 		Event:     "updated",
@@ -715,6 +723,13 @@ func (u *Updater) UnblockService(service string) bool {
 	return ok
 }
 
+// DeployedInfo holds the deployed image reference, digest, and container uptime for a service.
+type DeployedInfo struct {
+	Image  string // full image reference from container (e.g. localhost:5000/myapp:latest)
+	Digest string // full digest (displayed as shortDigest in the UI)
+	Uptime string // Docker status string (e.g. "Up 3 hours")
+}
+
 // containerStatus describes the state of containers in a compose project.
 type containerStatus int
 
@@ -724,26 +739,44 @@ const (
 	containerRunning                        // At least one container is running or exited
 )
 
+// setDeployedInfo stores the deployed image reference, digest, and uptime for a service.
+func (u *Updater) setDeployedInfo(service, image, digest, uptime string) {
+	u.deployedMu.Lock()
+	u.deployed[service] = DeployedInfo{Image: image, Digest: digest, Uptime: uptime}
+	u.deployedMu.Unlock()
+}
+
+// DeployedInfos returns a copy of the deployed service info map.
+func (u *Updater) DeployedInfos() map[string]DeployedInfo {
+	u.deployedMu.RLock()
+	defer u.deployedMu.RUnlock()
+	result := make(map[string]DeployedInfo, len(u.deployed))
+	for k, v := range u.deployed {
+		result[k] = v
+	}
+	return result
+}
+
 // findContainerByProject finds a container by compose project label.
-// Returns the first running container ID and the project status.
-func (u *Updater) findContainerByProject(ctx context.Context, project string) (string, containerStatus) {
+// Returns the first running container and the project status.
+func (u *Updater) findContainerByProject(ctx context.Context, project string) (*docker.Container, containerStatus) {
 	containers, err := u.docker.ListContainersByProject(ctx, project)
 	if err != nil {
 		log.Printf("[updater] failed to list containers for project %s: %v", project, err)
-		return "", containerNone
+		return nil, containerNone
 	}
 	if len(containers) == 0 {
-		return "", containerNone
+		return nil, containerNone
 	}
 	// Return first running container if any exist.
-	for _, c := range containers {
-		if c.State == "running" || c.State == "exited" {
-			return c.ID, containerRunning
+	for i := range containers {
+		if containers[i].State == "running" || containers[i].State == "exited" {
+			return &containers[i], containerRunning
 		}
 	}
 	// Containers exist but all are stuck (created/restarting).
-	// Return the first ID so callers can still inspect if needed.
-	return containers[0].ID, containerStuck
+	// Return the first so callers can still inspect if needed.
+	return &containers[0], containerStuck
 }
 
 // Helper functions for parsing image references.
