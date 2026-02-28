@@ -54,7 +54,7 @@ func NewMonitor(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispat
 // Run starts the monitor ticker. Interval matches the registry poll interval.
 // Blocks until ctx is cancelled.
 func (m *Monitor) Run(ctx context.Context) {
-	interval := time.Duration(m.cfg.Registry.PollInterval) * time.Second
+	interval := time.Duration(m.cfg.Monitor.StatsInterval) * time.Second
 	log.Printf("[monitor] polling resources every %s", interval)
 
 	// Poll immediately so stats are available before the first tick.

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.4] - 2026-02-28
+
+### Added
+- `registry.stats_interval` config field: decouples container resource stat collection from the registry poll interval. Defaults to `poll_interval` when unset (no behaviour change). Set lower (e.g. `30`) to get fresher CPU/memory data in the web UI and `/status` endpoint without increasing registry poll frequency
+
 ## [1.0.0-alpha.3] - 2026-02-28
 
 ### Fixed

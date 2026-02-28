@@ -20,6 +20,7 @@ type Config struct {
 	Registry      Registry      `json:"registry"`
 	API           API           `json:"api"`
 	Audit         Audit         `json:"audit"`
+	Monitor       Monitor       `json:"monitor"`
 	Notifications Notifications `json:"notifications"`
 	Push          Push          `json:"push"`
 	Services      []Service     `json:"services"`
@@ -39,6 +40,11 @@ type API struct {
 type Registry struct {
 	URL          string `json:"url"`
 	PollInterval int    `json:"poll_interval"` // seconds
+}
+
+// Monitor controls resource stat collection (CPU, memory).
+type Monitor struct {
+	StatsInterval int `json:"stats_interval"` // seconds; defaults to registry.poll_interval if unset
 }
 
 // Notifications defines all notification channels.
@@ -130,6 +136,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Registry.PollInterval <= 0 {
 		c.Registry.PollInterval = 300
+	}
+	if c.Monitor.StatsInterval <= 0 {
+		c.Monitor.StatsInterval = c.Registry.PollInterval
 	}
 	if c.API.Port == "" {
 		c.API.Port = "9090"

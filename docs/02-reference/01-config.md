@@ -20,6 +20,7 @@ For a walkthrough with annotated examples, see [Configuration](../01-getting-sta
   "registry": { ... },
   "api": { ... },
   "audit": { ... },
+  "monitor": { ... },
   "notifications": { ... },
   "services": [ ... ]
 }
@@ -32,12 +33,26 @@ Controls the registry polling behaviour used by full-mode services.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `url` | string | `"http://localhost:5000"` | Base URL of the local Docker registry |
-| `poll_interval` | integer | `300` | Seconds between poll cycles |
+| `poll_interval` | integer | `300` | Seconds between registry poll cycles (image digest comparison) |
 
 ```json
 "registry": {
   "url": "http://localhost:5000",
   "poll_interval": 300
+}
+```
+
+## `monitor`
+
+Controls container resource stat collection (CPU, memory). Independent of registry polling.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `stats_interval` | integer | `registry.poll_interval` | Seconds between container stat collections. Set lower than `poll_interval` (e.g. `30`) to get fresher CPU/memory data in the UI and `/status` endpoint without polling the registry more often |
+
+```json
+"monitor": {
+  "stats_interval": 30
 }
 ```
 
@@ -145,6 +160,9 @@ Validation failures at startup cause dockward to exit with a non-zero status. Ch
   "registry": {
     "url": "http://localhost:5000",
     "poll_interval": 300
+  },
+  "monitor": {
+    "stats_interval": 30
   },
   "api": {
     "port": "9090"

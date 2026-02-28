@@ -44,6 +44,9 @@ Poll a local registry, auto-deploy on image change, and auto-heal:
     "url": "http://localhost:5000",
     "poll_interval": 300
   },
+  "monitor": {
+    "stats_interval": 30
+  },
   "api": {
     "port": "9090"
   },
