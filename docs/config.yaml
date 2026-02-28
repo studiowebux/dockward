@@ -45,6 +45,96 @@ footer:
         - text: "Buy Me a Coffee"
           url: "https://buymeacoffee.com/studiowebux"
 
+landing:
+  enabled: true
+  nav:
+    - text: "Docs"
+      url: "/getting-started/quick-start.html"
+    - text: "GitHub"
+      url: "https://github.com/studiowebux/dockward"
+    - text: "Discord"
+      url: "https://discord.gg/BG5Erm9fNv"
+  hero:
+    title: "Auto-deploy and auto-heal agent for self-hosted Docker containers."
+    subtitle: "Push an image to your local registry. Dockward pulls it, deploys via compose, health-checks the result, and rolls back automatically if anything goes wrong."
+    buttons:
+      - text: "Get Started"
+        url: "/getting-started/quick-start.html"
+        primary: true
+      - text: "View on GitHub"
+        url: "https://github.com/studiowebux/dockward"
+        primary: false
+  features:
+    title: "Features"
+    items:
+      - emoji: "~"
+        title: "Auto-update"
+        description: "Polls a local Docker registry; redeploys a compose service the moment a new image digest lands."
+      - emoji: "~"
+        title: "Rollback"
+        description: "Tags the previous image before every deploy; reverts automatically if the new container fails to become healthy."
+      - emoji: "~"
+        title: "Auto-heal"
+        description: "Listens to Docker health events; restarts unhealthy containers with per-service cooldown to prevent restart storms."
+      - emoji: "~"
+        title: "Multi-image services"
+        description: "One service entry can track multiple images; a single compose redeploy fires when any image changes."
+      - emoji: "~"
+        title: "Heal-only mode"
+        description: "Watch and recover a service without ever touching its image — useful for third-party or pinned containers."
+      - emoji: "~"
+        title: "Blocked digest protection"
+        description: "Permanently blacklists a known-bad digest; dockward refuses to deploy it again even if it reappears in the registry."
+      - emoji: "~"
+        title: "Resource alerts"
+        description: "Per-container CPU and memory thresholds with independent cooldowns; fires notifications before a service falls over."
+      - emoji: "~"
+        title: "Audit log"
+        description: "Append-only JSONL file of every deploy, rollback, restart, and alert — full trail for post-mortems."
+      - emoji: "~"
+        title: "Live web UI"
+        description: "Real-time dashboard over SSE; shows service health, deployed image, container list, and recent events without page reloads."
+      - emoji: "~"
+        title: "Prometheus metrics"
+        description: "Counters and gauges for updates, rollbacks, restarts, and failures; drop into any existing Grafana setup."
+      - emoji: "~"
+        title: "Notifications"
+        description: "Discord webhook, SMTP email, and arbitrary HTTP webhooks; each event type is independently configurable."
+      - emoji: "~"
+        title: "HTTP API"
+        description: "/status, /trigger, /unblock, /audit, /metrics — automate or integrate with any toolchain."
+      - emoji: "~"
+        title: "Warden mode"
+        description: "Central aggregator for multi-machine fleets; agents push audit entries over HTTP, warden exposes a unified SSE dashboard."
+      - emoji: "~"
+        title: "Single binary"
+        description: "Zero runtime dependencies, ~12 MB; ships as linux/amd64, linux/arm64, and darwin/arm64."
+      - emoji: "~"
+        title: "Compose-native"
+        description: "Delegates all deploys to docker compose up -d — no custom orchestration."
+      - emoji: "~"
+        title: "Systemd-ready"
+        description: "Ships with service units for both agent and warden modes; systemctl enable dockward and done."
+  links:
+    title: "Resources"
+    items:
+      - icon: "github"
+        title: "GitHub"
+        description: "Source code, issues, and releases"
+        url: "https://github.com/studiowebux/dockward"
+      - icon: "discord"
+        title: "Community"
+        description: "Join the discussion on Discord"
+        url: "https://discord.gg/BG5Erm9fNv"
+  opensource:
+    title: "Open Source"
+    description: "AGPL-3.0. Self-host with full control. Built by Studio Webux."
+    links:
+      - text: "GitHub Repository"
+        url: "https://github.com/studiowebux/dockward"
+      - text: "Releases"
+        url: "https://github.com/studiowebux/dockward/releases"
+
 nav:
   - title: Home
     path: index.md
