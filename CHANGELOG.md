@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.6] - 2026-02-28
+
 ### Added
 - `images []string` field on `Service` — replaces the removed `image string` field. Supports multiple registry images per compose project; one deploy cycle is triggered when any image changes
 - `silent bool` field on `Service` — excludes the service from validation and monitoring entirely. Healer and monitor skip silent services
@@ -17,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `blocked` and `not_found` suppression map keys are now `"service/image"` (e.g. `"myapp/api:latest"`) instead of `"service"`, allowing independent state per image within a service
 - `deployed` map keys are now `"service/image"`; `/status` and web UI show the first matched image's reference and digest
 - Monitor resource alerts are now per-container with independent cooldown keys, preventing one container from suppressing alerts for another
+
+### Fixed
+- Rollback image tagging failed when a compose service uses a short image reference (e.g. `firegen:latest` without a registry prefix); updater now resolves the full registry-prefixed reference before tagging the rollback image
 
 ### Removed
 - `image string` field on `Service` — use `images []string` (**breaking change**)
