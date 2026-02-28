@@ -55,6 +55,7 @@ func main() {
 	configPath := flag.String("config", "/etc/dockward/config.json", "path to config file")
 	mode := flag.String("mode", "agent", "operating mode: agent|warden")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	verbose := flag.Bool("verbose", false, "enable debug-level logging")
 	flag.Parse()
 
 	if *showVersion {
@@ -64,6 +65,7 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[dockward] ")
+	watcher.SetVerbose(*verbose)
 
 	// Route to warden mode when requested.
 	if *mode == "warden" {

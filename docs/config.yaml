@@ -2,9 +2,13 @@ title: Dockward
 description: Docker deploy guard — polls a local registry for image changes, auto-deploys via docker compose with rollback, blocks bad digests, and auto-heals unhealthy containers.
 base_url: https://studiowebux.github.io/dockward
 nav:
+  - title: Home
+    path: index.md
   - title: Getting Started
     path: 01-getting-started/
     children:
+      - title: Quick Start
+        path: 01-getting-started/00-quick-start.md
       - title: Installation
         path: 01-getting-started/01-installation.md
       - title: Configuration
