@@ -8,11 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/config"
+	"github.com/studiowebux/dockward/internal/hub"
 )
 
 // API exposes HTTP endpoints for triggering updates, health, and metrics.
@@ -23,11 +25,30 @@ type API struct {
 	metrics *Metrics
 	monitor *Monitor
 	audit   *audit.Logger
+	hub     *hub.Hub
 	server  *http.Server
+}
+
+// broadcaster adapts hub.Hub to the audit.Broadcaster interface.
+// Pattern: adapter.
+type broadcaster struct {
+	hub *hub.Hub
+}
+
+func (b *broadcaster) Broadcast(e audit.Entry) {
+	data, err := json.Marshal(e)
+	if err != nil {
+		log.Printf("[api] broadcaster: marshal error: %v", err)
+		return
+	}
+	b.hub.Broadcast(data)
 }
 
 // NewAPI creates the trigger/metrics API on the given port.
 func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, port string) *API {
+	h := hub.NewHub()
+	al.WithBroadcast(&broadcaster{hub: h})
+
 	mux := http.NewServeMux()
 	api := &API{
 		updater: updater,
@@ -35,6 +56,7 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 		metrics: metrics,
 		monitor: monitor,
 		audit:   al,
+		hub:     h,
 		server: &http.Server{
 			Addr:         "127.0.0.1:" + port,
 			Handler:      mux,
@@ -53,7 +75,9 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 	mux.HandleFunc("/status/", api.handleStatusService)
 	mux.HandleFunc("/health", api.handleHealth)
 	mux.HandleFunc("/metrics", api.handleMetrics)
+	mux.HandleFunc("/audit", api.handleAudit)
 	mux.HandleFunc("/ui", api.handleUI)
+	mux.HandleFunc("/ui/events", api.handleUIEvents)
 	mux.HandleFunc("/unblock/", api.handleUnblockPost)
 
 	return api
@@ -383,6 +407,90 @@ func (a *API) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+// GET /audit - return recent audit log entries as JSON
+func (a *API) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := 100
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			if n > 500 {
+				n = 500
+			}
+			limit = n
+		}
+	}
+
+	entries, err := a.audit.Recent(limit)
+	if err != nil {
+		log.Printf("[api] audit read error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []audit.Entry{}
+	}
+	writeJSON(w, entries)
+}
+
+// GET /ui/events - SSE stream of live audit entries.
+// No auth — the agent API binds to 127.0.0.1 only.
+// Replays the last 50 entries on connect, then streams live events.
+func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Replay recent entries so the browser gets immediate content on connect.
+	recent, err := a.audit.Recent(50)
+	if err != nil {
+		log.Printf("[api] ui/events: audit read error: %v", err)
+	}
+	for _, e := range recent { // oldest-first (as stored)
+		data, merr := json.Marshal(e)
+		if merr != nil {
+			continue
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+	}
+	flusher.Flush()
+
+	ch := a.hub.Subscribe()
+	defer a.hub.Unsubscribe(ch)
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			if _, werr := fmt.Fprintf(w, "data: %s\n\n", msg); werr != nil {
+				log.Printf("[api] ui/events: write error: %v", werr)
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
 func writeJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(data); err != nil {
@@ -477,7 +585,6 @@ const uiHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="10">
 <title>Dockward</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -502,13 +609,13 @@ form{display:inline}
 
 <h2>Services</h2>
 <table>
-<thead><tr><th>Name</th><th>Status</th><th>CPU&nbsp;/&nbsp;Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
-<tbody>
+<thead><tr><th>Name</th><th>Status</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
+<tbody id="status-body">
 {{range .Services}}
 <tr>
   <td>{{.Name}}</td>
   <td class="{{.Status}}">{{.Status}}</td>
-  <td>{{if or .CPUPercent .MemoryPercent}}{{printf "%.0f" .CPUPercent}}%&nbsp;/&nbsp;{{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
+  <td>{{if or .CPUPercent .MemoryPercent}}{{printf "%.0f" .CPUPercent}}% / {{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
   <td>{{.UpdatesTotal}}</td>
   <td>{{.RollbacksTotal}}</td>
   <td>{{.RestartsTotal}}</td>
@@ -521,11 +628,10 @@ form{display:inline}
 </tbody>
 </table>
 
-{{if .Events}}
 <h2>Recent Events</h2>
 <table>
 <thead><tr><th>Time</th><th>Service</th><th>Event</th><th>Level</th><th>Message</th></tr></thead>
-<tbody>
+<tbody id="events-body">
 {{range .Events}}
 <tr>
   <td style="white-space:nowrap;color:#444">{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
@@ -537,7 +643,54 @@ form{display:inline}
 {{end}}
 </tbody>
 </table>
-{{end}}
 
+<script>
+var es = new EventSource('/ui/events');
+es.onmessage = function(evt) {
+  var e;
+  try { e = JSON.parse(evt.data); } catch(_) { return; }
+  var tbody = document.getElementById('events-body');
+  if (!tbody) return;
+  var ts = e.timestamp ? e.timestamp.replace('T',' ').slice(0,19) : '';
+  var row = '<tr>' +
+    '<td style="white-space:nowrap;color:#444">' + ts + '</td>' +
+    '<td style="color:#666">' + (e.service||'') + '</td>' +
+    '<td>' + (e.event||'') + '</td>' +
+    '<td class="' + (e.level||'') + '">' + (e.level||'') + '</td>' +
+    '<td style="color:#666">' + (e.message||'') + '</td>' +
+    '</tr>';
+  tbody.insertAdjacentHTML('afterbegin', row);
+  while (tbody.rows.length > 50) { tbody.deleteRow(-1); }
+};
+
+function refreshStatus() {
+  fetch('/status').then(function(r) { return r.json(); }).then(function(data) {
+    var tbody = document.getElementById('status-body');
+    if (!tbody) return;
+    var rows = '';
+    for (var i = 0; i < data.services.length; i++) {
+      var s = data.services[i];
+      var cpu = (s.cpu_percent || s.memory_percent)
+        ? Math.round(s.cpu_percent) + '% / ' + Math.round(s.memory_percent) + '%'
+        : '--';
+      var actions = '<form method="POST" action="/trigger/' + s.name + '?redirect=ui"><button type="submit">Trigger</button></form>';
+      if (s.blocked) {
+        actions += ' <form method="POST" action="/unblock/' + s.name + '"><button type="submit">Unblock</button></form>';
+      }
+      rows += '<tr>' +
+        '<td>' + s.name + '</td>' +
+        '<td class="' + s.status + '">' + s.status + '</td>' +
+        '<td>' + cpu + '</td>' +
+        '<td>' + (s.updates_total||0) + '</td>' +
+        '<td>' + (s.rollbacks_total||0) + '</td>' +
+        '<td>' + (s.restarts_total||0) + '</td>' +
+        '<td>' + actions + '</td>' +
+        '</tr>';
+    }
+    tbody.innerHTML = rows;
+  }).catch(function(){});
+}
+setInterval(refreshStatus, 15000);
+</script>
 </body>
 </html>`

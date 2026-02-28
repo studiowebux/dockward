@@ -35,12 +35,19 @@ type Pusher interface {
 	Send(ctx context.Context, e Entry) error
 }
 
+// Broadcaster receives new audit entries for local fan-out (e.g. SSE hub).
+// Implemented by watcher broadcaster adapter. Defined here to avoid an import cycle.
+type Broadcaster interface {
+	Broadcast(e Entry)
+}
+
 // Logger appends Entry values to a JSON Lines file.
 // A nil or zero-value Logger is safe to use — all operations are no-ops.
 type Logger struct {
-	mu   sync.Mutex
-	file *os.File // nil when disabled
-	push Pusher   // nil when push is disabled
+	mu    sync.Mutex
+	file  *os.File     // nil when disabled
+	push  Pusher       // nil when push is disabled
+	bcast Broadcaster  // nil when broadcast is disabled
 }
 
 // WithPush attaches a Pusher to the logger. Returns the same logger (fluent).
@@ -50,6 +57,16 @@ func (l *Logger) WithPush(p Pusher) *Logger {
 		return nil
 	}
 	l.push = p
+	return l
+}
+
+// WithBroadcast attaches a Broadcaster to the logger. Returns the same logger (fluent).
+// Safe to call on a nil logger (returns nil).
+func (l *Logger) WithBroadcast(b Broadcaster) *Logger {
+	if l == nil {
+		return nil
+	}
+	l.bcast = b
 	return l
 }
 
@@ -82,6 +99,7 @@ func (l *Logger) Write(e Entry) error {
 	l.mu.Lock()
 	_, err = fmt.Fprintf(l.file, "%s\n", data)
 	p := l.push
+	b := l.bcast
 	l.mu.Unlock()
 
 	if err != nil {
@@ -95,6 +113,11 @@ func (l *Logger) Write(e Entry) error {
 				log.Printf("[audit] push to warden failed: %v", sendErr)
 			}
 		}()
+	}
+
+	// Fan out to local SSE hub.
+	if b != nil {
+		go b.Broadcast(e)
 	}
 
 	return nil

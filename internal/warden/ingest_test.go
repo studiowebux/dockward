@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/studiowebux/dockward/internal/audit"
+	"github.com/studiowebux/dockward/internal/hub"
 )
 
 // testServer builds a minimal Server suitable for handler testing.
@@ -24,7 +25,7 @@ func testServer() *Server {
 	return &Server{
 		cfg:   cfg,
 		store: NewStore(cfg.Agents),
-		hub:   NewHub(),
+		hub:   hub.NewHub(),
 	}
 }
 

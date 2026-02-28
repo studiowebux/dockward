@@ -24,6 +24,7 @@ The dockward API binds exclusively to `127.0.0.1:<port>`. The default port is `9
 | `GET` | `/errored` | List services with a persistent poll error |
 | `GET` | `/status` | Aggregated state for all configured services |
 | `GET` | `/status/<name>` | Aggregated state for a single service |
+| `GET` | `/audit` | Recent audit log entries as JSON |
 | `GET` | `/health` | Liveness check |
 | `GET` | `/metrics` | Prometheus text format metrics |
 
@@ -210,6 +211,45 @@ curl -s localhost:9090/status/myapp
 ```
 
 Returns `404 Not Found` if the service name is not in the config.
+
+---
+
+## GET /audit
+
+Returns the last N audit log entries as a JSON array. Requires `audit.path` to be set in the config; returns an empty array when audit is disabled.
+
+**Query parameters:**
+
+| Parameter | Default | Max | Description |
+|-----------|---------|-----|-------------|
+| `limit` | 100 | 500 | Number of entries to return (most recent) |
+
+```sh
+curl -s localhost:9090/audit
+curl -s localhost:9090/audit?limit=20
+```
+
+Example response:
+
+```json
+[
+  {
+    "timestamp": "2026-02-28T10:00:00Z",
+    "service": "myapp",
+    "event": "updated",
+    "message": "Deployed new image successfully.",
+    "level": "info",
+    "old_digest": "sha256:aaa...",
+    "new_digest": "sha256:bbb..."
+  }
+]
+```
+
+Empty array when audit is disabled or no entries exist:
+
+```json
+[]
+```
 
 ---
 

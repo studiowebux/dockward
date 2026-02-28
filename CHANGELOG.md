@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.1] - 2026-02-28
+
+### Added
+- `GET /audit` endpoint returning recent audit entries as JSON (`?limit=N`, default 100, max 500); returns empty array when audit is disabled
+- Agent web UI SSE stream (`GET /ui/events`): live audit entries pushed to the browser via Server-Sent Events; replays the last 50 entries on connect
+- Agent web UI: replaced `<meta http-equiv="refresh">` full-page reload with SSE live event feed and a 15-second `fetch`-based status table refresh
+- Shared `internal/hub` package: SSE publish-subscribe hub extracted from `internal/warden`; imported by both watcher and warden
+- `audit.Broadcaster` interface and `Logger.WithBroadcast` to fan out new entries to the local SSE hub without an import cycle
+- `dockward-warden.service`: systemd unit for running dockward in warden mode
+- `linux/arm64` binary added to release pipeline (OVH Ampere, Raspberry Pi)
+- Watcher test coverage: `api_test.go`, `updater_test.go`, `healer_test.go`
+
 ## [0.5.0] - 2026-02-27
 
 ### Added
