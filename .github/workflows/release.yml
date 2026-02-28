@@ -3,6 +3,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.5.0)"
+        required: true
 
 permissions:
   contents: write
@@ -13,6 +18,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-go@v5
         with:
@@ -23,13 +30,28 @@ jobs:
 
       - run: go test ./...
 
+      - name: Resolve tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build linux/amd64
-        run: GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dockward-linux-amd64 ./cmd/dockward/
+        run: GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=${{ steps.tag.outputs.name }}" -o dockward-linux-amd64 ./cmd/dockward/
 
       - name: Build darwin/arm64
-        run: GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dockward-darwin-arm64 ./cmd/dockward/
+        run: GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=${{ steps.tag.outputs.name }}" -o dockward-darwin-arm64 ./cmd/dockward/
 
-      - name: Upload release assets
-        run: gh release upload ${{ github.ref_name }} dockward-linux-amd64 dockward-darwin-arm64 --clobber
+      - name: Create or update GitHub Release
+        run: |
+          gh release create ${{ steps.tag.outputs.name }} \
+            dockward-linux-amd64 dockward-darwin-arm64 \
+            --generate-notes 2>/dev/null || \
+          gh release upload ${{ steps.tag.outputs.name }} \
+            dockward-linux-amd64 dockward-darwin-arm64 \
+            --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
