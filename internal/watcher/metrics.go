@@ -38,6 +38,33 @@ func NewMetrics() *Metrics {
 	}
 }
 
+// SeedServices pre-populates zero-valued counter and gauge entries for all
+// configured services so every label combination appears from the first
+// Prometheus scrape — not only after the first event fires.
+// serviceHealthy is intentionally excluded: containers without a HEALTHCHECK
+// should not emit a health gauge at all.
+func (m *Metrics) SeedServices(names []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, name := range names {
+		if _, ok := m.updates[name]; !ok {
+			m.updates[name] = 0
+		}
+		if _, ok := m.rollbacks[name]; !ok {
+			m.rollbacks[name] = 0
+		}
+		if _, ok := m.restarts[name]; !ok {
+			m.restarts[name] = 0
+		}
+		if _, ok := m.failures[name]; !ok {
+			m.failures[name] = 0
+		}
+		if _, ok := m.serviceBlocked[name]; !ok {
+			m.serviceBlocked[name] = false
+		}
+	}
+}
+
 func (m *Metrics) IncUpdates(service string) {
 	m.mu.Lock()
 	m.updates[service]++

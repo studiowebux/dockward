@@ -106,6 +106,11 @@ func main() {
 
 	// Create metrics, updater, healer, monitor, and API.
 	metrics := watcher.NewMetrics()
+	svcNames := make([]string, 0, len(cfg.Services))
+	for _, svc := range cfg.Services {
+		svcNames = append(svcNames, svc.Name)
+	}
+	metrics.SeedServices(svcNames)
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
 	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)

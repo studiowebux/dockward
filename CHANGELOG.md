@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.3] - 2026-02-28
+
+### Fixed
+- Prometheus `/metrics` counters (`updates_total`, `rollbacks_total`, `restarts_total`, `failures_total`, `service_blocked`) only appeared for services with at least one event; all configured services are now pre-seeded to 0 at startup so every label combination is present from the first scrape
+
 ## [1.0.0-alpha.2] - 2026-02-28
 
 ### Fixed
