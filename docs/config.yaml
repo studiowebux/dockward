@@ -84,7 +84,7 @@ landing:
         description: "Watch and recover a service without ever touching its image — useful for third-party or pinned containers."
       - emoji: "~"
         title: "Blocked digest protection"
-        description: "Permanently blocks a known-bad digest; dockward refuses to deploy it again even if it reappears in the registry."
+        description: "Blocks a known-bad digest in memory; skips it until a new digest is pushed, the service is manually unblocked, or dockward restarts."
       - emoji: "~"
         title: "Resource alerts"
         description: "Per-container CPU and memory thresholds with independent cooldowns; fires notifications before a service falls over."

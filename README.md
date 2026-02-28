@@ -24,7 +24,7 @@ Discord: https://discord.gg/BG5Erm9fNv
 | **Auto-heal** | Listens to Docker health events; restarts unhealthy containers with per-service cooldown to prevent restart storms |
 | **Multi-image services** | One service entry can track multiple images; a single compose redeploy fires when any image changes |
 | **Heal-only mode** | Watch and recover a service without ever touching its image — useful for third-party or pinned containers |
-| **Blocked digest protection** | Permanently blocks a known-bad digest; dockward refuses to deploy it again even if it reappears in the registry |
+| **Blocked digest protection** | Blocks a known-bad digest in memory; dockward skips it until a new digest is pushed to the registry, the service is manually unblocked via API, or dockward restarts |
 | **Resource alerts** | Per-container CPU and memory thresholds with independent cooldowns; fires notifications before a service falls over |
 | **Audit log** | Append-only JSONL file of every deploy, rollback, restart, and alert — full trail for post-mortems |
 | **Live web UI** | Real-time dashboard over SSE; shows service health, deployed image, container list, and recent events without page reloads |
