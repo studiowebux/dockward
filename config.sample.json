@@ -3,6 +3,20 @@
     "url": "http://localhost:5000",
     "poll_interval": 300
   },
+  "api": {
+    "port": "9090"
+  },
+  "monitor": {
+    "stats_interval": 30
+  },
+  "audit": {
+    "path": "/var/log/dockward/audit.jsonl"
+  },
+  "push": {
+    "warden_url": "",
+    "token": "$DOCKWARD_PUSH_TOKEN",
+    "machine_id": "ovh-01"
+  },
   "notifications": {
     "discord": {
       "webhook_url": "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"
@@ -28,36 +42,33 @@
       }
     ]
   },
-  "audit": {
-    "path": "/var/log/dockward/audit.jsonl"
-  },
-  "push": {
-    "warden_url": "",
-    "token": "$DOCKWARD_PUSH_TOKEN",
-    "machine_id": "ovh-01"
-  },
   "services": [
     {
-      "name": "minimaldoc",
-      "image": "minimaldoc:latest",
+      "name": "myapp",
+      "image": "myapp:latest",
       "compose_files": [
-        "/srv/minimaldoc.com/minimaldoc-landing-main/docker-compose.yml"
+        "/srv/myapp/docker-compose.yml"
       ],
-      "compose_project": "minimaldoc",
+      "compose_project": "myapp",
+      "env_file": "/srv/myapp/.env",
       "auto_update": true,
+      "auto_start": true,
       "auto_heal": true,
       "compose_watch": false,
       "health_grace": 60,
-      "heal_cooldown": 300
+      "heal_cooldown": 300,
+      "heal_max_restarts": 3,
+      "cpu_threshold": 80,
+      "memory_threshold": 85
     },
     {
-      "name": "minimaldoc-with-override",
-      "image": "minimaldoc:latest",
+      "name": "myapp-with-override",
+      "image": "myapp:latest",
       "compose_files": [
-        "/srv/minimaldoc.com/docker-compose.yml",
-        "/srv/minimaldoc.com/docker-compose.override.yml"
+        "/srv/myapp/docker-compose.yml",
+        "/srv/myapp/docker-compose.override.yml"
       ],
-      "compose_project": "minimaldoc",
+      "compose_project": "myapp",
       "auto_update": true,
       "auto_heal": true,
       "health_grace": 60,
@@ -67,11 +78,12 @@
       "name": "proxy",
       "image": "",
       "compose_files": [
-        "/srv/proxy/proxy-main/docker-compose.yml"
+        "/srv/proxy/docker-compose.yml"
       ],
       "compose_project": "proxy",
       "auto_update": false,
       "auto_heal": true,
+      "compose_watch": true,
       "health_grace": 60,
       "heal_cooldown": 300
     },
