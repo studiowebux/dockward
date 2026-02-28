@@ -29,7 +29,7 @@ jobs:
       - name: Build darwin/arm64
         run: GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dockward-darwin-arm64 ./cmd/dockward/
 
-      - name: Create GitHub Release
-        run: gh release create ${{ github.ref_name }} dockward-linux-amd64 dockward-darwin-arm64 --generate-notes
+      - name: Upload release assets
+        run: gh release upload ${{ github.ref_name }} dockward-linux-amd64 dockward-darwin-arm64 --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

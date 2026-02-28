@@ -1,3 +1,12 @@
+---
+title: Warden Setup
+description: Deploy a central warden to aggregate audit events from multiple dockward agents and view them on a multi-machine dashboard.
+tags:
+  - warden
+  - setup
+  - multi-machine
+---
+
 # Warden Setup
 
 Deploy one warden instance to aggregate audit events from multiple agents.

@@ -1,3 +1,12 @@
+---
+title: Warden Reference
+description: Configuration reference, HTTP endpoints, auth model, and push config for the dockward central warden aggregator.
+tags:
+  - warden
+  - reference
+  - multi-machine
+---
+
 # Warden Reference
 
 The warden aggregates audit entries from multiple dockward agents, stores them
