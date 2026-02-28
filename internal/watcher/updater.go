@@ -454,11 +454,21 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, oldDigest, new
 	registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(svc.Image)
 	fullImage := registryPrefix + ":" + imageTag(svc.Image)
 
-	// Step 1: Tag current image as :rollback (if it exists).
+	// Step 1: Tag current image as :rollback using the running container's image ID.
+	// We resolve by image ID because compose may store the image under a short reference
+	// (e.g. "firegen:latest") that does not match the constructed registry prefix form
+	// ("localhost:5000/firegen:latest"). TagImage by ID always succeeds.
+	// We also capture the compose image reference so rollback can retag to the right name.
+	var oldImageRef string
 	if oldDigest != "" {
-		if err := u.docker.TagImage(ctx, fullImage, registryPrefix, "rollback"); err != nil {
-			log.Printf("[updater] %s: failed to tag rollback: %v", svc.Name, err)
-			// Continue anyway; rollback won't be available.
+		if container, cStatus := u.findContainerByProject(ctx, svc.ComposeProject); cStatus == containerRunning {
+			if info, err := u.docker.InspectContainer(ctx, container.ID); err == nil {
+				oldImageRef = info.Config.Image // reference compose used (e.g. "firegen:latest")
+				if err := u.docker.TagImage(ctx, info.Image, registryPrefix, "rollback"); err != nil {
+					log.Printf("[updater] %s: failed to tag rollback: %v", svc.Name, err)
+					// Continue anyway; rollback won't be available.
+				}
+			}
 		}
 	}
 
@@ -474,12 +484,12 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, oldDigest, new
 	}
 
 	// Step 3: Verify health asynchronously. clearDeploying is called via defer in verifyAfterDeploy.
-	go u.verifyAfterDeploy(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix)
+	go u.verifyAfterDeploy(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, oldImageRef)
 
 	return nil
 }
 
-func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, oldDigest, newDigest, fullImage, registryPrefix string) {
+func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, oldDigest, newDigest, fullImage, registryPrefix, oldImageRef string) {
 	defer u.clearDeploying(svc.Name)
 
 	grace := time.Duration(svc.HealthGrace) * time.Second
@@ -500,7 +510,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		if cStatus == containerNone {
 			if time.Now().After(deadline) {
 				log.Printf("[updater] %s: container not found after grace period, rolling back", svc.Name)
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "container not found after deploy")
+				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "container not found after deploy", oldImageRef)
 				return
 			}
 			continue // Container may be starting up.
@@ -510,7 +520,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		if err != nil {
 			log.Printf("[updater] %s: inspect failed during health poll: %v", svc.Name, err)
 			if time.Now().After(deadline) {
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "inspect failed: "+err.Error())
+				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "inspect failed: "+err.Error(), oldImageRef)
 				return
 			}
 			continue
@@ -523,7 +533,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 				return
 			}
 			if time.Now().After(deadline) {
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "container not running")
+				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, "container not running", oldImageRef)
 				return
 			}
 			continue
@@ -536,13 +546,13 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, old
 		case "unhealthy":
 			reason := info.LastHealthOutput()
 			log.Printf("[updater] %s: unhealthy, rolling back immediately", svc.Name)
-			u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, reason)
+			u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, reason, oldImageRef)
 			return
 		default: // "starting" or other transient states
 			if time.Now().After(deadline) {
 				reason := info.LastHealthOutput()
 				log.Printf("[updater] %s: still %s after grace period, rolling back", svc.Name, info.State.Health.Status)
-				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, reason)
+				u.rollback(ctx, svc, oldDigest, newDigest, fullImage, registryPrefix, reason, oldImageRef)
 				return
 			}
 			// Keep polling.
@@ -578,7 +588,7 @@ func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, oldDi
 	u.cleanupRollback(ctx, registryPrefix)
 }
 
-func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, newDigest, fullImage, registryPrefix, reason string) {
+func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, newDigest, fullImage, registryPrefix, reason, oldImageRef string) {
 	log.Printf("[updater] %s: rolling back. Reason: %s", svc.Name, reason)
 	u.metrics.IncRollbacks(svc.Name)
 	u.metrics.SetHealthy(svc.Name, false)
@@ -593,6 +603,18 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, oldDigest, n
 	// Retag :rollback as :latest and redeploy.
 	rollbackImage := registryPrefix + ":rollback"
 	tag := imageTag(svc.Image)
+
+	// If compose uses a different image reference than the registry-prefixed form
+	// (e.g. "localhost:5000/firegen:latest" vs "firegen:latest"), also retag to
+	// that reference so compose up picks up the old image correctly.
+	// This handles the case where Docker stores the image without a RepoTag for
+	// the registry-prefixed name after a local registry pull.
+	composeRef := registryPrefix + ":" + tag
+	if oldImageRef != "" && oldImageRef != composeRef {
+		if err := u.docker.TagImage(ctx, rollbackImage, imageName(oldImageRef), imageTag(oldImageRef)); err != nil {
+			log.Printf("[updater] %s: rollback retag to compose ref %s failed: %v", svc.Name, oldImageRef, err)
+		}
+	}
 
 	if err := u.docker.TagImage(ctx, rollbackImage, registryPrefix, tag); err != nil {
 		log.Printf("[updater] %s: rollback tag failed: %v", svc.Name, err)
