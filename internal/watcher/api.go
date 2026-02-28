@@ -227,6 +227,10 @@ type serviceStatus struct {
 	RollbacksTotal int64 `json:"rollbacks_total"`
 	RestartsTotal  int64 `json:"restarts_total"`
 	FailuresTotal  int64 `json:"failures_total"`
+	// Deployed image info — populated each poll cycle.
+	Image           string `json:"image,omitempty"`
+	ImageDigest     string `json:"image_digest,omitempty"`
+	ContainerUptime string `json:"container_uptime,omitempty"`
 	// Resource usage — populated each monitor poll cycle for all running containers.
 	HasStats      bool    `json:"has_stats"`
 	CPUPercent    float64 `json:"cpu_percent,omitempty"`
@@ -298,6 +302,7 @@ type stateSnap struct {
 	healthGauges  map[string]bool
 	counters      map[string]ServiceCounters
 	stats         map[string]ServiceStats
+	deployed      map[string]DeployedInfo
 }
 
 func (a *API) stateSnapshot() stateSnap {
@@ -314,6 +319,7 @@ func (a *API) stateSnapshot() stateSnap {
 	if a.monitor != nil {
 		snap.stats = a.monitor.StatsSnapshot()
 	}
+	snap.deployed = a.updater.DeployedInfos()
 	return snap
 }
 
@@ -346,6 +352,11 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 		s.MemoryPercent = st.MemoryPercent
 		s.MemoryUsageMB = st.MemoryUsageMB
 		s.MemoryLimitMB = st.MemoryLimitMB
+	}
+	if d, ok := snap.deployed[svc.Name]; ok {
+		s.Image          = d.Image
+		s.ImageDigest    = shortDigest(d.Digest)
+		s.ContainerUptime = d.Uptime
 	}
 	s.Status = synthesizeStatus(s)
 	return s
@@ -644,12 +655,15 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
 
 <h2>Services</h2>
 <table>
-<thead><tr><th>Name</th><th>Status</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
+<thead><tr><th>Name</th><th>Status</th><th>Image</th><th>Digest</th><th>Uptime</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
 <tbody id="status-body">
 {{range .Services}}
 <tr>
   <td>{{.Name}}</td>
   <td class="{{.Status}}">{{.Status}}</td>
+  <td style="color:var(--text-muted)">{{if .Image}}{{.Image}}{{else}}--{{end}}</td>
+  <td style="color:var(--text-muted)">{{if .ImageDigest}}{{.ImageDigest}}{{else}}--{{end}}</td>
+  <td style="color:var(--text-muted)">{{if .ContainerUptime}}{{.ContainerUptime}}{{else}}--{{end}}</td>
   <td>{{if .HasStats}}{{printf "%.0f" .CPUPercent}}% / {{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
   <td>{{.UpdatesTotal}}</td>
   <td>{{.RollbacksTotal}}</td>
@@ -731,6 +745,9 @@ function refreshStatus(){
       rows+='<tr>'+
         '<td>'+esc(s.name)+'</td>'+
         '<td class="'+esc(s.status)+'">'+esc(s.status)+'</td>'+
+        '<td style="color:var(--text-muted)">'+(s.image?esc(s.image):'--')+'</td>'+
+        '<td style="color:var(--text-muted)">'+(s.image_digest?esc(s.image_digest):'--')+'</td>'+
+        '<td style="color:var(--text-muted)">'+(s.container_uptime?esc(s.container_uptime):'--')+'</td>'+
         '<td>'+esc(cpu)+'</td>'+
         '<td>'+(s.updates_total||0)+'</td>'+
         '<td>'+(s.rollbacks_total||0)+'</td>'+
