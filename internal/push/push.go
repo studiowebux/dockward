@@ -50,7 +50,7 @@ func (c *Client) Send(ctx context.Context, entry audit.Entry) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
-	resp, err := c.http.Do(req)
+	resp, err := c.http.Do(req) // #nosec G704 -- URL from config, not user input
 	if err != nil {
 		return fmt.Errorf("push: send: %w", err)
 	}

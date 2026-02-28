@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/studiowebux/dockward/internal/audit"
+	"github.com/studiowebux/dockward/internal/hub"
 )
 
 const heartbeatInterval = 30 * time.Second
@@ -16,7 +17,7 @@ const heartbeatInterval = 30 * time.Second
 // and emits synthetic audit entries on state transitions (online → offline, offline → online).
 type Heartbeat struct {
 	store  *Store
-	hub    *Hub
+	hub    *hub.Hub
 	agents []AgentConfig
 	http   *http.Client
 	// online tracks the last known online state per agent ID.
@@ -24,14 +25,14 @@ type Heartbeat struct {
 }
 
 // NewHeartbeat creates a Heartbeat ready to run.
-func NewHeartbeat(store *Store, hub *Hub, agents []AgentConfig) *Heartbeat {
+func NewHeartbeat(store *Store, h *hub.Hub, agents []AgentConfig) *Heartbeat {
 	online := make(map[string]bool, len(agents))
 	for _, a := range agents {
 		online[a.ID] = false // assume offline until first successful check
 	}
 	return &Heartbeat{
 		store:  store,
-		hub:    hub,
+		hub:    h,
 		agents: agents,
 		http:   &http.Client{Timeout: 5 * time.Second},
 		online: online,
@@ -69,12 +70,12 @@ func (hb *Heartbeat) poll(ctx context.Context, a AgentConfig) {
 		return
 	}
 
-	resp, err := hb.http.Do(req)
+	resp, err := hb.http.Do(req) // #nosec G704 -- URL from config, not user input
 	if err != nil {
 		hb.transition(a.ID, false)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close() // #nosec G104 -- health check; body content is irrelevant
 
 	hb.transition(a.ID, resp.StatusCode == http.StatusOK)
 }

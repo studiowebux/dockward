@@ -60,7 +60,7 @@ type SMTP struct {
 	From     string `json:"from"`
 	To       string `json:"to"`
 	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
+	Password string `json:"password,omitempty"` // #nosec G117 -- SMTP credential, not a secret leak
 }
 
 // Webhook is a user-defined HTTP webhook with template support.

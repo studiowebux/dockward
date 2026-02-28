@@ -45,13 +45,16 @@ jobs:
       - name: Build darwin/arm64
         run: GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=${{ steps.tag.outputs.name }}" -o dockward-darwin-arm64 ./cmd/dockward/
 
+      - name: Build linux/arm64
+        run: GOOS=linux GOARCH=arm64 go build -ldflags "-X main.version=${{ steps.tag.outputs.name }}" -o dockward-linux-arm64 ./cmd/dockward/
+
       - name: Create or update GitHub Release
         run: |
           gh release create ${{ steps.tag.outputs.name }} \
-            dockward-linux-amd64 dockward-darwin-arm64 \
+            dockward-linux-amd64 dockward-darwin-arm64 dockward-linux-arm64 \
             --generate-notes 2>/dev/null || \
           gh release upload ${{ steps.tag.outputs.name }} \
-            dockward-linux-amd64 dockward-darwin-arm64 \
+            dockward-linux-amd64 dockward-darwin-arm64 dockward-linux-arm64 \
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

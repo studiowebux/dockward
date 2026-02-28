@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/studiowebux/dockward/internal/hub"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -14,7 +16,7 @@ const shutdownTimeout = 5 * time.Second
 type Server struct {
 	cfg       *WardenConfig
 	store     *Store
-	hub       *Hub
+	hub       *hub.Hub
 	heartbeat *Heartbeat
 	server    *http.Server
 }
@@ -24,18 +26,19 @@ type Server struct {
 func NewServer(cfg *WardenConfig) *Server {
 	store := NewStore(cfg.Agents)
 	store.LoadState(cfg.API.StatePath)
-	hub := NewHub()
-	hb := NewHeartbeat(store, hub, cfg.Agents)
+	h := hub.NewHub()
+	hb := NewHeartbeat(store, h, cfg.Agents)
 
 	mux := http.NewServeMux()
 	s := &Server{
 		cfg:       cfg,
 		store:     store,
-		hub:       hub,
+		hub:       h,
 		heartbeat: hb,
 		server: &http.Server{
-			Addr:    fmt.Sprintf(":%s", cfg.API.Port),
-			Handler: mux,
+			Addr:              fmt.Sprintf(":%s", cfg.API.Port),
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
 

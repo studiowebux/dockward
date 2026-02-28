@@ -162,7 +162,7 @@ func (u *Updater) composeHash(files []string) (string, error) {
 			return "", fmt.Errorf("open %s: %w", path, err)
 		}
 		_, err = io.Copy(h, f)
-		f.Close()
+		_ = f.Close() // #nosec G104 -- read-only file; close error does not affect hash correctness
 		if err != nil {
 			return "", fmt.Errorf("read %s: %w", path, err)
 		}
