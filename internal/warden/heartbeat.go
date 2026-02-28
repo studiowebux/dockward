@@ -70,12 +70,12 @@ func (hb *Heartbeat) poll(ctx context.Context, a AgentConfig) {
 		return
 	}
 
-	resp, err := hb.http.Do(req)
+	resp, err := hb.http.Do(req) // #nosec G704 -- URL from config, not user input
 	if err != nil {
 		hb.transition(a.ID, false)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close() // #nosec G104 -- health check; body content is irrelevant
 
 	hb.transition(a.ID, resp.StatusCode == http.StatusOK)
 }
