@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.5] - 2026-02-28
+
+### Added
+- `image`, `image_digest`, and `container_uptime` fields per service in `GET /status` JSON and the web UI; populated from the Docker list API on each poll cycle and from the inspect API after a successful deploy — no new Docker API calls
+
 ## [1.0.0-alpha.4] - 2026-02-28
 
 ### Added
