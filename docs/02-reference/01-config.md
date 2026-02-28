@@ -19,6 +19,7 @@ For a walkthrough with annotated examples, see [Configuration](../01-getting-sta
 {
   "registry": { ... },
   "api": { ... },
+  "audit": { ... },
   "notifications": { ... },
   "services": [ ... ]
 }
@@ -53,6 +54,22 @@ Controls the HTTP API server. The API binds to `127.0.0.1` only — it is never 
   "port": "9090"
 }
 ```
+
+## `audit`
+
+Audit logging is opt-in. Omit the section or leave `path` empty to disable it.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | `""` | Absolute path to the audit log file. Created if it does not exist. Empty disables audit logging |
+
+```json
+"audit": {
+  "path": "/var/log/dockward/audit.jsonl"
+}
+```
+
+The file is written in [JSON Lines](https://jsonlines.org) format — one JSON object per line. Each entry contains: `timestamp`, `service`, `event`, `message`, `level`, and optional fields (`old_digest`, `new_digest`, `container`, `reason`). See [Audit Log Guide](../03-guides/05-audit-log.md) for event types and usage.
 
 ## `notifications`
 
@@ -103,6 +120,9 @@ Array of service definitions. Each service is independent — fields used depend
 | `auto_update` | boolean | `false` | Enable registry polling and auto-deploy for this service |
 | `auto_start` | boolean | `false` | When `true` and digests match, start the compose project if no containers are running. Forces `down`+`up` if containers are stuck (created/restarting) |
 | `auto_heal` | boolean | `false` | Enable auto-restart on unhealthy health status |
+| `compose_watch` | boolean | `false` | Re-deploy on compose file content change (no image pull). Computes SHA-256 of all `compose_files` each poll cycle; runs `compose up -d` when the hash changes. First run stores the hash without deploying |
+| `cpu_threshold` | float | `0` | Alert when CPU usage exceeds this percentage. `0` disables. Uses same cooldown as `heal_cooldown` |
+| `memory_threshold` | float | `0` | Alert when memory usage exceeds this percentage. `0` disables. Uses same cooldown as `heal_cooldown` |
 | `health_grace` | integer | `60` | Seconds to wait after deploy before evaluating container health |
 | `heal_cooldown` | integer | `300` | Minimum seconds between consecutive auto-restarts |
 | `heal_max_restarts` | integer | `3` | Maximum consecutive failed restarts before giving up |
@@ -128,6 +148,9 @@ Validation failures at startup cause dockward to exit with a non-zero status. Ch
   },
   "api": {
     "port": "9090"
+  },
+  "audit": {
+    "path": "/var/log/dockward/audit.jsonl"
   },
   "notifications": {
     "discord": {

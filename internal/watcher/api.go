@@ -3,11 +3,15 @@ package watcher
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/config"
 )
 
@@ -17,16 +21,20 @@ type API struct {
 	updater *Updater
 	healer  *Healer
 	metrics *Metrics
+	monitor *Monitor
+	audit   *audit.Logger
 	server  *http.Server
 }
 
 // NewAPI creates the trigger/metrics API on the given port.
-func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, port string) *API {
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, port string) *API {
 	mux := http.NewServeMux()
 	api := &API{
 		updater: updater,
 		healer:  healer,
 		metrics: metrics,
+		monitor: monitor,
+		audit:   al,
 		server: &http.Server{
 			Addr:         "127.0.0.1:" + port,
 			Handler:      mux,
@@ -45,6 +53,8 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, port string) *AP
 	mux.HandleFunc("/status/", api.handleStatusService)
 	mux.HandleFunc("/health", api.handleHealth)
 	mux.HandleFunc("/metrics", api.handleMetrics)
+	mux.HandleFunc("/ui", api.handleUI)
+	mux.HandleFunc("/unblock/", api.handleUnblockPost)
 
 	return api
 }
@@ -77,7 +87,8 @@ func (a *API) handleTriggerAll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "triggered", "scope": "all"})
 }
 
-// POST /trigger/<service> - trigger update check for a specific service
+// POST /trigger/<service> - trigger update check for a specific service.
+// Accepts ?redirect=ui to redirect to the web UI instead of returning JSON.
 func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -90,14 +101,24 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	redirectUI := r.URL.Query().Get("redirect") == "ui"
+
 	found := false
 	for _, svc := range a.updater.cfg.Services {
 		if svc.Name == serviceName {
 			if !svc.AutoUpdate {
+				if redirectUI {
+					http.Redirect(w, r, "/ui", http.StatusSeeOther)
+					return
+				}
 				writeJSON(w, map[string]string{"status": "skipped", "reason": "auto_update is false"})
 				return
 			}
 			if a.updater.IsDeploying(serviceName) {
+				if redirectUI {
+					http.Redirect(w, r, "/ui", http.StatusSeeOther)
+					return
+				}
 				writeJSON(w, map[string]string{"status": "skipped", "reason": "deploy in progress"})
 				return
 			}
@@ -118,6 +139,10 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if redirectUI {
+		http.Redirect(w, r, "/ui", http.StatusSeeOther)
+		return
+	}
 	writeJSON(w, map[string]string{"status": "triggered", "scope": serviceName})
 }
 
@@ -178,6 +203,11 @@ type serviceStatus struct {
 	RollbacksTotal int64 `json:"rollbacks_total"`
 	RestartsTotal  int64 `json:"restarts_total"`
 	FailuresTotal  int64 `json:"failures_total"`
+	// Resource usage — populated when cpu_threshold or memory_threshold is configured.
+	CPUPercent    float64 `json:"cpu_percent,omitempty"`
+	MemoryPercent float64 `json:"memory_percent,omitempty"`
+	MemoryUsageMB float64 `json:"memory_usage_mb,omitempty"`
+	MemoryLimitMB float64 `json:"memory_limit_mb,omitempty"`
 }
 
 // GET /status - aggregated state for all configured services
@@ -242,10 +272,11 @@ type stateSnap struct {
 	restartCounts map[string]int
 	healthGauges  map[string]bool
 	counters      map[string]ServiceCounters
+	stats         map[string]ServiceStats
 }
 
 func (a *API) stateSnapshot() stateSnap {
-	return stateSnap{
+	snap := stateSnap{
 		blocked:       a.updater.BlockedDigests(),
 		notFound:      a.updater.NotFoundServices(),
 		errored:       a.updater.ErroredServices(),
@@ -255,6 +286,10 @@ func (a *API) stateSnapshot() stateSnap {
 		healthGauges:  a.metrics.HealthSnapshot(),
 		counters:      a.metrics.CountersSnapshot(),
 	}
+	if a.monitor != nil {
+		snap.stats = a.monitor.StatsSnapshot()
+	}
+	return snap
 }
 
 func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStatus {
@@ -279,6 +314,12 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 		s.RollbacksTotal = c.Rollbacks
 		s.RestartsTotal  = c.Restarts
 		s.FailuresTotal  = c.Failures
+	}
+	if st, ok := snap.stats[svc.Name]; ok {
+		s.CPUPercent    = st.CPUPercent
+		s.MemoryPercent = st.MemoryPercent
+		s.MemoryUsageMB = st.MemoryUsageMB
+		s.MemoryLimitMB = st.MemoryLimitMB
 	}
 	s.Status = synthesizeStatus(s)
 	return s
@@ -348,3 +389,155 @@ func writeJSON(w http.ResponseWriter, data any) {
 		log.Printf("[api] json encode error: %v", err)
 	}
 }
+
+// uiData is the template context for GET /ui.
+type uiData struct {
+	Hostname string
+	Uptime   string
+	Services []serviceStatus
+	Events   []audit.Entry
+}
+
+// uiTemplate is compiled once at startup.
+var uiTemplate = template.Must(template.New("ui").Parse(uiHTML))
+
+// GET /ui - web dashboard
+func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	snap := a.stateSnapshot()
+	meta := a.metrics.Meta()
+
+	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
+	for _, svc := range a.updater.cfg.Services {
+		services = append(services, a.buildServiceStatus(svc, snap))
+	}
+
+	events, err := a.audit.Recent(20)
+	if err != nil {
+		log.Printf("[api] ui: audit read error: %v", err)
+	}
+	// Reverse so newest event appears first.
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+
+	hostname, _ := os.Hostname()
+
+	data := uiData{
+		Hostname: hostname,
+		Uptime:   formatUptime(meta.UptimeSeconds),
+		Services: services,
+		Events:   events,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := uiTemplate.Execute(w, data); err != nil {
+		log.Printf("[api] ui: template error: %v", err)
+	}
+}
+
+// POST /unblock/<service> - HTML-form-compatible alias for DELETE /blocked/<service>.
+// Unblocks the service and redirects to /ui.
+func (a *API) handleUnblockPost(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serviceName := strings.TrimPrefix(r.URL.Path, "/unblock/")
+	if serviceName == "" {
+		http.Error(w, "service name required", http.StatusBadRequest)
+		return
+	}
+
+	a.updater.UnblockService(serviceName)
+	http.Redirect(w, r, "/ui", http.StatusSeeOther)
+}
+
+// formatUptime converts a duration in seconds to a human-readable string.
+func formatUptime(seconds int64) string {
+	days := seconds / 86400
+	hours := (seconds % 86400) / 3600
+	minutes := (seconds % 3600) / 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	default:
+		return fmt.Sprintf("%dm", minutes)
+	}
+}
+
+const uiHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="10">
+<title>Dockward</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:monospace;font-size:13px;background:#0f0f0f;color:#c8c8c8;padding:24px 32px}
+header{margin-bottom:24px;color:#555;font-size:12px}
+h2{font-size:11px;font-weight:normal;color:#444;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;margin-bottom:32px}
+th{text-align:left;color:#3a3a3a;font-weight:normal;padding:5px 12px;border-bottom:1px solid #1c1c1c;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+td{padding:6px 12px;border-bottom:1px solid #161616;vertical-align:middle}
+tr:hover td{background:#121212}
+.ok{color:#4caf50}.unhealthy{color:#ef5350}.deploying{color:#42a5f5}
+.degraded{color:#ffa726}.exhausted{color:#ef5350}.blocked{color:#ffa726}
+.not_found{color:#555}.errored{color:#ef5350}.unknown{color:#333}
+.info{color:#42a5f5}.warning{color:#ffa726}.error{color:#ef5350}
+button{background:#171717;color:#666;border:1px solid #222;padding:3px 10px;cursor:pointer;font-family:monospace;font-size:11px}
+button:hover{background:#1e1e1e;color:#bbb;border-color:#333}
+form{display:inline}
+</style>
+</head>
+<body>
+<header>Dockward &mdash; {{.Hostname}} &mdash; uptime {{.Uptime}}</header>
+
+<h2>Services</h2>
+<table>
+<thead><tr><th>Name</th><th>Status</th><th>CPU&nbsp;/&nbsp;Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
+<tbody>
+{{range .Services}}
+<tr>
+  <td>{{.Name}}</td>
+  <td class="{{.Status}}">{{.Status}}</td>
+  <td>{{if or .CPUPercent .MemoryPercent}}{{printf "%.0f" .CPUPercent}}%&nbsp;/&nbsp;{{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
+  <td>{{.UpdatesTotal}}</td>
+  <td>{{.RollbacksTotal}}</td>
+  <td>{{.RestartsTotal}}</td>
+  <td>
+    <form method="POST" action="/trigger/{{.Name}}?redirect=ui"><button type="submit">Trigger</button></form>
+    {{if .Blocked}}&nbsp;<form method="POST" action="/unblock/{{.Name}}"><button type="submit">Unblock</button></form>{{end}}
+  </td>
+</tr>
+{{end}}
+</tbody>
+</table>
+
+{{if .Events}}
+<h2>Recent Events</h2>
+<table>
+<thead><tr><th>Time</th><th>Service</th><th>Event</th><th>Level</th><th>Message</th></tr></thead>
+<tbody>
+{{range .Events}}
+<tr>
+  <td style="white-space:nowrap;color:#444">{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
+  <td style="color:#666">{{.Service}}</td>
+  <td>{{.Event}}</td>
+  <td class="{{.Level}}">{{.Level}}</td>
+  <td style="color:#666">{{.Message}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{end}}
+
+</body>
+</html>`

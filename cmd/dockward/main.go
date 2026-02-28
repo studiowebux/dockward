@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/docker"
 	"github.com/studiowebux/dockward/internal/notify"
@@ -61,11 +62,22 @@ func main() {
 	dc := docker.NewClient()
 	rc := registry.NewClient(cfg.Registry.URL)
 
-	// Create metrics, updater, healer, and API.
+	// Create audit logger (no-op when path is empty).
+	auditLog, err := audit.New(cfg.Audit.Path)
+	if err != nil {
+		log.Fatalf("failed to open audit log: %v", err)
+	}
+	defer auditLog.Close()
+	if cfg.Audit.Path != "" {
+		log.Printf("audit log: %s", cfg.Audit.Path)
+	}
+
+	// Create metrics, updater, healer, monitor, and API.
 	metrics := watcher.NewMetrics()
-	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics)
-	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics)
-	api := watcher.NewAPI(updater, healer, metrics, cfg.API.Port)
+	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
+	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
+	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
+	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, cfg.API.Port)
 
 	// Context with signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -83,6 +95,7 @@ func main() {
 	// Start goroutines.
 	go updater.Run(ctx)
 	go healer.Run(ctx)
+	go monitor.Run(ctx)
 	go api.Run(ctx)
 
 	log.Printf("dockward %s started", version)
