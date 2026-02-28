@@ -13,7 +13,9 @@ import (
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/docker"
 	"github.com/studiowebux/dockward/internal/notify"
+	"github.com/studiowebux/dockward/internal/push"
 	"github.com/studiowebux/dockward/internal/registry"
+	"github.com/studiowebux/dockward/internal/warden"
 	"github.com/studiowebux/dockward/internal/watcher"
 	"github.com/studiowebux/dockward/internal/wizard"
 )
@@ -23,7 +25,7 @@ var version = "dev"
 
 func main() {
 	// Subcommand: dockward config [--config <path>]
-	// Interactive wizard to create or edit the config file.
+	// Interactive wizard to create or edit the agent config file.
 	if len(os.Args) > 1 && os.Args[1] == "config" {
 		fs := flag.NewFlagSet("config", flag.ExitOnError)
 		configPath := fs.String("config", "/etc/dockward/config.json", "path to config file")
@@ -36,7 +38,22 @@ func main() {
 		return
 	}
 
+	// Subcommand: dockward warden-config [--config <path>]
+	// Interactive wizard to create or edit the warden config file.
+	if len(os.Args) > 1 && os.Args[1] == "warden-config" {
+		fs := flag.NewFlagSet("warden-config", flag.ExitOnError)
+		configPath := fs.String("config", "/etc/dockward/warden.json", "path to warden config file")
+		if err := fs.Parse(os.Args[2:]); err != nil {
+			log.Fatalf("warden-config: %v", err)
+		}
+		if err := wizard.RunWarden(*configPath); err != nil {
+			log.Fatalf("warden config wizard: %v", err)
+		}
+		return
+	}
+
 	configPath := flag.String("config", "/etc/dockward/config.json", "path to config file")
+	mode := flag.String("mode", "agent", "operating mode: agent|warden")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -47,6 +64,12 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[dockward] ")
+
+	// Route to warden mode when requested.
+	if *mode == "warden" {
+		runWarden(*configPath)
+		return
+	}
 
 	// Load configuration.
 	cfg, err := config.Load(*configPath)
@@ -70,6 +93,13 @@ func main() {
 	defer auditLog.Close()
 	if cfg.Audit.Path != "" {
 		log.Printf("audit log: %s", cfg.Audit.Path)
+	}
+
+	// Attach push client if warden_url is configured.
+	if cfg.Push.WardenURL != "" {
+		pc := push.New(cfg.Push.WardenURL, cfg.Push.Token, cfg.Push.MachineID)
+		auditLog.WithPush(pc)
+		log.Printf("push: forwarding audit entries to warden at %s (machine=%s)", cfg.Push.WardenURL, cfg.Push.MachineID)
 	}
 
 	// Create metrics, updater, healer, monitor, and API.
@@ -111,6 +141,28 @@ func main() {
 	// Block until shutdown.
 	<-ctx.Done()
 	log.Printf("stopped")
+}
+
+func runWarden(configPath string) {
+	wcfg, err := warden.LoadWarden(configPath)
+	if err != nil {
+		log.Fatalf("failed to load warden config: %v", err)
+	}
+	log.Printf("warden mode: %d agent(s) configured, port %s", len(wcfg.Agents), wcfg.API.Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received %s, shutting down", sig)
+		cancel()
+	}()
+
+	srv := warden.NewServer(wcfg)
+	srv.Run(ctx)
 }
 
 func buildDispatcher(cfg *config.Config) *notify.Dispatcher {

@@ -8,12 +8,20 @@ import (
 	"os"
 )
 
+// Push defines optional warden push settings for agent mode.
+type Push struct {
+	WardenURL string `json:"warden_url"` // empty = disabled
+	Token     string `json:"token"`      // bearer token; $ENV_VAR expansion supported
+	MachineID string `json:"machine_id"` // identifier shown in warden UI
+}
+
 // Config is the top-level configuration.
 type Config struct {
 	Registry      Registry      `json:"registry"`
 	API           API           `json:"api"`
 	Audit         Audit         `json:"audit"`
 	Notifications Notifications `json:"notifications"`
+	Push          Push          `json:"push"`
 	Services      []Service     `json:"services"`
 }
 
@@ -108,6 +116,10 @@ func Load(path string) (*Config, error) {
 			cfg.Notifications.Webhooks[i].Headers[k] = os.ExpandEnv(v)
 		}
 	}
+
+	// Expand environment variables in push config.
+	cfg.Push.WardenURL = os.ExpandEnv(cfg.Push.WardenURL)
+	cfg.Push.Token = os.ExpandEnv(cfg.Push.Token)
 
 	return cfg, nil
 }
