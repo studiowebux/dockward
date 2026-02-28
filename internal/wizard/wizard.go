@@ -40,6 +40,12 @@ func Run(path string) error {
 	if err := editAPI(s, &cfg.API); err != nil {
 		return err
 	}
+	if err := editAudit(s, &cfg.Audit); err != nil {
+		return err
+	}
+	if err := editPush(s, &cfg.Push); err != nil {
+		return err
+	}
 	if err := editNotifications(s, &cfg.Notifications); err != nil {
 		return err
 	}
@@ -79,6 +85,26 @@ func editAPI(s *bufio.Scanner, a *config.API) error {
 		a.Port = "9090"
 	}
 	a.Port = prompt(s, fmt.Sprintf("  Port [%s]: ", a.Port), a.Port)
+
+	fmt.Println()
+	return nil
+}
+
+func editAudit(s *bufio.Scanner, a *config.Audit) error {
+	fmt.Println("[Audit]")
+	a.Path = prompt(s, fmt.Sprintf("  Audit log path (leave empty to disable) [%s]: ", a.Path), a.Path)
+	fmt.Println()
+	return nil
+}
+
+func editPush(s *bufio.Scanner, p *config.Push) error {
+	fmt.Println("[Push] (forward audit entries to a central warden)")
+
+	p.WardenURL = prompt(s, fmt.Sprintf("  Warden URL (leave empty to disable) [%s]: ", p.WardenURL), p.WardenURL)
+	if p.WardenURL != "" {
+		p.Token = prompt(s, fmt.Sprintf("  Push token ($ENV_VAR supported) [%s]: ", p.Token), p.Token)
+		p.MachineID = prompt(s, fmt.Sprintf("  Machine ID (label shown in warden UI) [%s]: ", p.MachineID), p.MachineID)
+	}
 
 	fmt.Println()
 	return nil
@@ -241,6 +267,7 @@ func editService(s *bufio.Scanner, svc *config.Service) error {
 	svc.AutoUpdate = confirmYN(s, fmt.Sprintf("    Auto update (poll registry and deploy on digest change)? (%s): ", boolDefault(svc.AutoUpdate)), svc.AutoUpdate)
 	svc.AutoStart = confirmYN(s, fmt.Sprintf("    Auto start (start compose project if no containers running)? (%s): ", boolDefault(svc.AutoStart)), svc.AutoStart)
 	svc.AutoHeal = confirmYN(s, fmt.Sprintf("    Auto heal (restart unhealthy/died containers)? (%s): ", boolDefault(svc.AutoHeal)), svc.AutoHeal)
+	svc.ComposeWatch = confirmYN(s, fmt.Sprintf("    Compose watch (re-deploy on compose file change, no pull)? (%s): ", boolDefault(svc.ComposeWatch)), svc.ComposeWatch)
 
 	if svc.HealthGrace <= 0 {
 		svc.HealthGrace = 60
@@ -264,6 +291,18 @@ func editService(s *bufio.Scanner, svc *config.Service) error {
 	raw = prompt(s, fmt.Sprintf("    Max consecutive restart attempts [%d]: ", svc.HealMaxRestarts), strconv.Itoa(svc.HealMaxRestarts))
 	if v, err := strconv.Atoi(raw); err == nil && v > 0 {
 		svc.HealMaxRestarts = v
+	}
+
+	fmt.Println()
+	fmt.Println("  Resource alerts (0 = disabled):")
+	raw = prompt(s, fmt.Sprintf("    CPU alert threshold %% [%.0f]: ", svc.CPUThreshold), fmt.Sprintf("%.0f", svc.CPUThreshold))
+	if v, err := strconv.ParseFloat(raw, 64); err == nil && v >= 0 {
+		svc.CPUThreshold = v
+	}
+
+	raw = prompt(s, fmt.Sprintf("    Memory alert threshold %% [%.0f]: ", svc.MemoryThreshold), fmt.Sprintf("%.0f", svc.MemoryThreshold))
+	if v, err := strconv.ParseFloat(raw, 64); err == nil && v >= 0 {
+		svc.MemoryThreshold = v
 	}
 
 	fmt.Println()
@@ -336,6 +375,15 @@ func serviceFlags(svc config.Service) string {
 	}
 	if svc.AutoHeal {
 		parts = append(parts, "auto_heal")
+	}
+	if svc.ComposeWatch {
+		parts = append(parts, "compose_watch")
+	}
+	if svc.CPUThreshold > 0 {
+		parts = append(parts, fmt.Sprintf("cpu>%.0f%%", svc.CPUThreshold))
+	}
+	if svc.MemoryThreshold > 0 {
+		parts = append(parts, fmt.Sprintf("mem>%.0f%%", svc.MemoryThreshold))
 	}
 	if len(parts) == 0 {
 		return "monitor only"
