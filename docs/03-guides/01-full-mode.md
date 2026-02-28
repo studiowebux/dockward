@@ -126,3 +126,61 @@ docker compose -p myapp -f /srv/myapp/docker-compose.yml up -d
 :::warning
 If `auto_heal` is also enabled and the container starts unhealthy on the first manual deploy, dockward will attempt restarts according to `heal_cooldown` and `heal_max_restarts`. Ensure the container is healthy before enabling `auto_heal` on a new service.
 :::
+
+## Compose Watch
+
+`compose_watch: true` makes dockward apply changes to compose files without pushing a new image. Enable it for services where compose file edits (environment variables, resource limits, healthcheck parameters, bind mounts) should be applied automatically.
+
+It runs independently of `auto_update`. A service can have one, both, or neither enabled.
+
+**How it works:**
+
+Each poll cycle dockward computes the SHA-256 of the concatenated contents of all files in `compose_files`. On the first run the hash is stored and no action is taken — the service is assumed to be running the current spec already. When a subsequent cycle detects a changed hash, dockward runs:
+
+```sh
+docker compose -p myapp -f /srv/myapp/docker-compose.yml up -d
+```
+
+No image pull occurs. The deploy uses whatever images are already present locally.
+
+A `compose_drift` event is written to the audit log and sent to notification channels.
+
+```json
+{
+  "name": "myapp",
+  "compose_files": ["/srv/myapp/docker-compose.yml"],
+  "compose_project": "myapp",
+  "compose_watch": true
+}
+```
+
+The poll interval is still controlled by `registry.poll_interval`. For compose-watch-only services (no `auto_update`), set `poll_interval` to a value that matches how quickly you need changes applied.
+
+## Auto-Start
+
+`auto_start: true` restarts the compose project when images are up to date but no containers are running. It acts as a recovery mechanism for services that stopped for reasons unrelated to a bad deploy (e.g. host reboot, manual `docker compose down`).
+
+`auto_start` only activates when `auto_update: true` and all image digests match the registry. It does not start services with outdated images.
+
+**Behavior by container state:**
+
+| Container state | Action |
+|-----------------|--------|
+| Running | Nothing — normal state |
+| None (never started or stopped) | `compose up -d` |
+| Stuck (created/restarting but not running) | `compose down` + `compose up -d` |
+
+A guard prevents repeated start attempts at the same image version. If `compose up` succeeds but the container immediately exits or never becomes healthy, dockward will not keep cycling `up`. The guard clears when the remote digest changes (new image pushed) or when a container comes up running.
+
+A `started` notification (warning level) is sent on each start or forced restart.
+
+```json
+{
+  "name": "myapp",
+  "images": ["myapp:latest"],
+  "compose_files": ["/srv/myapp/docker-compose.yml"],
+  "compose_project": "myapp",
+  "auto_update": true,
+  "auto_start": true
+}
+```
