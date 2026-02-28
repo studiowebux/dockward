@@ -34,6 +34,27 @@ Two operational modes:
 1. **Full mode**: registry polling + auto-deploy with rollback + auto-heal. Requires a local Docker registry and docker compose.
 2. **Heal-only mode**: healthcheck monitoring + auto-restart. Works with any container (compose-managed or standalone `docker run`). No registry or compose files needed.
 
+## Features
+
+| Feature | Description |
+|---|---|
+| **Auto-update** | Polls a local Docker registry; redeploys a compose service the moment a new image digest lands |
+| **Rollback** | Tags the previous image before every deploy; reverts automatically if the new container fails to become healthy |
+| **Auto-heal** | Listens to Docker health events; restarts unhealthy containers with per-service cooldown to prevent restart storms |
+| **Multi-image services** | One service entry can track multiple images; a single compose redeploy fires when any image changes |
+| **Heal-only mode** | Watch and recover a service without ever touching its image — useful for third-party or pinned containers |
+| **Blocked digest protection** | Permanently blacklists a known-bad digest; dockward refuses to deploy it again even if it reappears in the registry |
+| **Resource alerts** | Per-container CPU and memory thresholds with independent cooldowns; fires notifications before a service falls over |
+| **Audit log** | Append-only JSONL file of every deploy, rollback, restart, and alert — full trail for post-mortems |
+| **Live web UI** | Real-time dashboard over SSE; shows service health, deployed image, container list, and recent events without page reloads |
+| **Prometheus metrics** | Counters and gauges for updates, rollbacks, restarts, and failures; drop into any existing Grafana setup |
+| **Notifications** | Discord webhook, SMTP email, and arbitrary HTTP webhooks; each event type is independently configurable |
+| **HTTP API** | `/status`, `/trigger`, `/unblock`, `/audit`, `/metrics` — automate or integrate with any toolchain |
+| **Warden mode** | Central aggregator for multi-machine fleets; agents push audit entries over HTTP, warden exposes a unified SSE dashboard |
+| **Single binary** | Zero runtime dependencies, ~12 MB; ships as `linux/amd64`, `linux/arm64`, and `darwin/arm64` |
+| **Compose-native** | Delegates all deploys to `docker compose up -d` — no custom orchestration, no vendor lock-in |
+| **Systemd-ready** | Ships with service units for both agent and warden modes; `systemctl enable dockward` and done |
+
 ## Installation
 
 Download the latest binary from [Releases](https://github.com/studiowebux/dockward/releases) or build from source (requires Go 1.24+):
@@ -94,7 +115,7 @@ dockward -config /etc/dockward/config.json --verbose
   "services": [
     {
       "name": "myapp",
-      "image": "myapp:latest",
+      "images": ["myapp:latest"],
       "compose_files": [
         "/srv/myapp/docker-compose.yml"
       ],
