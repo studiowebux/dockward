@@ -2,7 +2,7 @@
 
 - [GitHub](https://github.com/studiowebux/dockward)
 
-- [Home](index.md)
+- [Introduction](introduction.md)
 - Getting Started
   - [Quick Start](01-getting-started/00-quick-start.md)
   - [Installation](01-getting-started/01-installation.md)

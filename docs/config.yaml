@@ -49,14 +49,14 @@ landing:
   enabled: true
   nav:
     - text: "Docs"
-      url: "/index.html"
+      url: "/introduction.html"
     - text: "GitHub"
       url: "https://github.com/studiowebux/dockward"
     - text: "Discord"
       url: "https://discord.gg/BG5Erm9fNv"
   hero:
-    title: "Auto-deploy and auto-heal agent for self-hosted Docker containers."
-    subtitle: "Push an image to your local registry. Dockward pulls it, deploys via compose, health-checks the result, and rolls back automatically if anything goes wrong."
+    title: "Auto-deploy and auto-heal agent for self-hosted Docker containers"
+    subtitle: "Push to your local registry. Dockward deploys via compose, health-checks the result, and rolls back automatically."
     buttons:
       - text: "Get Started"
         url: "/getting-started/quick-start.html"
@@ -126,6 +126,18 @@ landing:
         title: "Community"
         description: "Join the discussion on Discord"
         url: "https://discord.gg/BG5Erm9fNv"
+      - icon: "coffee"
+        title: "Buy Me a Coffee"
+        description: "Support the project"
+        url: "https://buymeacoffee.com/studiowebux"
+      - icon: "github"
+        title: "GitHub Sponsors"
+        description: "Sponsor on GitHub"
+        url: "https://github.com/sponsors/studiowebux"
+      - icon: "patreon"
+        title: "Patreon"
+        description: "Support on Patreon"
+        url: "https://patreon.com/studiowebux"
   opensource:
     title: "Open Source"
     description: "AGPL-3.0. Self-host with full control. Built by Studio Webux."
@@ -136,8 +148,8 @@ landing:
         url: "https://github.com/studiowebux/dockward/releases"
 
 nav:
-  - title: Home
-    path: index.md
+  - title: Introduction
+    path: introduction.md
   - title: Getting Started
     path: 01-getting-started/
     children:

@@ -1,5 +1,5 @@
 ---
-title: Dockward
+title: Introduction
 description: Auto-deploy and auto-heal agent for self-hosted Docker containers.
 tags:
   - dockward

@@ -70,8 +70,10 @@ is not affected by warden availability.
 ## Ring buffer
 
 The warden stores the last 200 events in memory. On SSE connect, the browser
-receives the last 50 events as replay. Events are not persisted to disk on
-the warden side; each agent retains its own audit log.
+receives the last 50 events as replay. When `api.state_path` is set, the ring
+buffer is written to disk on shutdown and restored on startup — events survive
+restarts. Without `state_path`, events are held in memory only; each agent
+retains its own persistent audit log regardless.
 
 ## Heartbeat
 

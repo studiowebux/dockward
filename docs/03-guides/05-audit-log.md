@@ -35,9 +35,7 @@ Each line is a self-contained JSON object:
   "message": "Deployed new image successfully.",
   "level": "info",
   "old_digest": "sha256:abc123...",
-  "new_digest": "sha256:def456...",
-  "container": "myapp-web-1",
-  "reason": ""
+  "new_digest": "sha256:def456..."
 }
 ```
 
