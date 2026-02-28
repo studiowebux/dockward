@@ -1,6 +1,6 @@
 title: Dockward
 description: Auto-deploy and auto-heal agent for self-hosted Docker containers.
-base_url: https://studiowebux.github.io/dockward
+base_url: https://dockward.com
 author: Studio Webux
 theme: default
 dark_mode: true
