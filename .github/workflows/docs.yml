@@ -35,7 +35,7 @@ jobs:
         run: cd minimaldoc-src && go build -o ../minimaldoc ./cmd/minimaldoc/
 
       - name: Build docs
-        run: ./minimaldoc build docs -o public --base-url https://studiowebux.github.io/dockward
+        run: ./minimaldoc build docs -o public
 
       - uses: actions/upload-pages-artifact@v3
         with:
