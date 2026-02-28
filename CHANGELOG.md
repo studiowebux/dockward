@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.7] - 2026-02-28
+
+### Fixed
+- Status refresh (every 15s) no longer collapses expanded container `<details>` rows; open state is preserved across `innerHTML` replacement via `data-svc` keying
+- Toggling a container list no longer causes horizontal layout shift in the services table; replaced nested `<table>` inside `<details>` with flex `<div>` rows to eliminate outer table column reflow
+
 ## [1.0.0-alpha.6] - 2026-02-28
 
 ### Added
