@@ -1,6 +1,9 @@
 package warden
 
 import (
+	"encoding/json"
+	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -85,6 +88,53 @@ func (s *Store) SetAgentState(id string, online bool) {
 		a.Online = online
 		a.LastSeen = time.Now().UTC()
 	}
+}
+
+// LoadState reads a previously saved ring buffer from path and appends the
+// entries into the store. No-op when path is empty or the file does not exist.
+func (s *Store) LoadState(path string) {
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- path from config, not user input
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("warden: load state %s: %v", path, err)
+		}
+		return
+	}
+	var entries []audit.Entry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		log.Printf("warden: parse state %s: %v", path, err)
+		return
+	}
+	for _, e := range entries {
+		s.Append(e)
+	}
+	log.Printf("warden: restored %d event(s) from %s", len(entries), path)
+}
+
+// SaveState writes the current ring buffer (newest-first) to path as JSON.
+// No-op when path is empty.
+func (s *Store) SaveState(path string) {
+	if path == "" {
+		return
+	}
+	events := s.Recent(ringSize) // newest first; reverse for chronological order
+	// Reverse to oldest-first so LoadState replays in the right order.
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	data, err := json.Marshal(events)
+	if err != nil {
+		log.Printf("warden: marshal state: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil { // #nosec G306
+		log.Printf("warden: save state %s: %v", path, err)
+		return
+	}
+	log.Printf("warden: saved %d event(s) to %s", len(events), path)
 }
 
 // AgentStates returns a snapshot of all agent states.

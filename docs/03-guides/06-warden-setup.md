@@ -36,13 +36,20 @@ agent should use its own token. Restart dockward on each agent host.
 
 ## 3. Create the warden config
 
-Use `warden.sample.json` as a starting point:
+Use the interactive wizard:
+
+```bash
+dockward warden-config --config /etc/dockward/warden.json
+```
+
+Or use `warden.sample.json` as a starting point:
 
 ```json
 {
   "api": {
     "port": "8080",
-    "token": "$DOCKWARD_WARDEN_TOKEN"
+    "token": "$DOCKWARD_WARDEN_TOKEN",
+    "state_path": "/var/lib/dockward/warden-state.json"
   },
   "agents": [
     {
@@ -62,6 +69,7 @@ Use `warden.sample.json` as a starting point:
 - `agents[].url` is the agent's dockward API base URL (used for heartbeat polling)
 - `agents[].token` must match the `push.token` configured on that agent
 - `api.token` is the warden dashboard password
+- `api.state_path` persists the event ring buffer to disk on shutdown and restores it on start; leave empty to disable
 
 ## 4. Start the warden
 

@@ -1,6 +1,7 @@
 package warden
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"html/template"
 	"log"
@@ -207,12 +208,16 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 }
 
 // uiAuth validates the warden token from query param or cookie.
+// Uses constant-time comparison to prevent timing attacks.
 func (s *Server) uiAuth(r *http.Request) bool {
-	if r.URL.Query().Get("token") == s.cfg.API.Token {
+	want := []byte(s.cfg.API.Token)
+	if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), want) == 1 {
 		return true
 	}
-	if c, err := r.Cookie("token"); err == nil && c.Value == s.cfg.API.Token {
-		return true
+	if c, err := r.Cookie("token"); err == nil {
+		if subtle.ConstantTimeCompare([]byte(c.Value), want) == 1 {
+			return true
+		}
 	}
 	return false
 }

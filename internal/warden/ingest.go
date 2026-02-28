@@ -1,6 +1,7 @@
 package warden
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"log"
@@ -64,12 +65,13 @@ func bearerToken(r *http.Request) string {
 }
 
 // validAgentToken reports whether token matches any configured agent token.
+// Uses constant-time comparison to prevent timing attacks.
 func (s *Server) validAgentToken(token string) bool {
 	if token == "" {
 		return false
 	}
 	for _, a := range s.cfg.Agents {
-		if a.Token == token {
+		if subtle.ConstantTimeCompare([]byte(a.Token), []byte(token)) == 1 {
 			return true
 		}
 	}

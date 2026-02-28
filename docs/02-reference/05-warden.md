@@ -19,9 +19,20 @@ dockward --mode warden --config /etc/dockward/warden.json
 |-------|------|----------|-------------|
 | `api.port` | string | no | HTTP listen port. Default: `8080` |
 | `api.token` | string | yes | Bearer token for browser and SSE auth. `$ENV_VAR` expanded |
+| `api.state_path` | string | no | Path to persist the event ring buffer on shutdown and restore on start. Empty disables persistence |
 | `agents[].id` | string | yes | Display name shown in the UI |
 | `agents[].url` | string | yes | Agent base URL for heartbeat polling (e.g. `http://host:9090`) |
 | `agents[].token` | string | yes | Token agents use when POSTing to `/ingest`. `$ENV_VAR` expanded |
+
+## Config wizard
+
+Use `dockward warden-config` to create or edit the warden config interactively:
+
+```sh
+dockward warden-config --config /etc/dockward/warden.json
+```
+
+See [Config Wizard](../03-guides/04-config-wizard.md) for the full session flow.
 
 ## HTTP endpoints
 

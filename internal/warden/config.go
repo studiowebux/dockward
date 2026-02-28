@@ -17,8 +17,9 @@ type WardenConfig struct {
 
 // WardenAPI defines the HTTP server settings for the warden.
 type WardenAPI struct {
-	Port  string `json:"port"`  // default "8080"
-	Token string `json:"token"` // bearer token for browser auth; $ENV_VAR expansion supported
+	Port      string `json:"port"`       // default "8080"
+	Token     string `json:"token"`      // bearer token for browser auth; $ENV_VAR expansion supported
+	StatePath string `json:"state_path"` // path to persist the event ring buffer; empty = disabled
 }
 
 // AgentConfig describes one monitored agent.

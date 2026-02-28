@@ -20,8 +20,10 @@ type Server struct {
 }
 
 // NewServer creates a fully wired warden Server from cfg.
+// If cfg.API.StatePath is set, the ring buffer is loaded from disk immediately.
 func NewServer(cfg *WardenConfig) *Server {
 	store := NewStore(cfg.Agents)
+	store.LoadState(cfg.API.StatePath)
 	hub := NewHub()
 	hb := NewHeartbeat(store, hub, cfg.Agents)
 
@@ -58,6 +60,8 @@ func (s *Server) Run(ctx context.Context) {
 	}()
 
 	<-ctx.Done()
+
+	s.store.SaveState(s.cfg.API.StatePath)
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()

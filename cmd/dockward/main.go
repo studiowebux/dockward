@@ -25,7 +25,7 @@ var version = "dev"
 
 func main() {
 	// Subcommand: dockward config [--config <path>]
-	// Interactive wizard to create or edit the config file.
+	// Interactive wizard to create or edit the agent config file.
 	if len(os.Args) > 1 && os.Args[1] == "config" {
 		fs := flag.NewFlagSet("config", flag.ExitOnError)
 		configPath := fs.String("config", "/etc/dockward/config.json", "path to config file")
@@ -34,6 +34,20 @@ func main() {
 		}
 		if err := wizard.Run(*configPath); err != nil {
 			log.Fatalf("config wizard: %v", err)
+		}
+		return
+	}
+
+	// Subcommand: dockward warden-config [--config <path>]
+	// Interactive wizard to create or edit the warden config file.
+	if len(os.Args) > 1 && os.Args[1] == "warden-config" {
+		fs := flag.NewFlagSet("warden-config", flag.ExitOnError)
+		configPath := fs.String("config", "/etc/dockward/warden.json", "path to warden config file")
+		if err := fs.Parse(os.Args[2:]); err != nil {
+			log.Fatalf("warden-config: %v", err)
+		}
+		if err := wizard.RunWarden(*configPath); err != nil {
+			log.Fatalf("warden config wizard: %v", err)
 		}
 		return
 	}

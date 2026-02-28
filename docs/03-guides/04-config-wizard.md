@@ -60,11 +60,55 @@ Each prompt shows the current value in brackets. Pressing Enter accepts it witho
 | `s` | Save the config file and exit |
 | `q` | Quit without saving |
 
-When adding or editing a service, the wizard covers every field: name, image, compose files, compose project, container name, env file, and all behaviour flags (`auto_update`, `auto_start`, `auto_heal`, `health_grace`, `heal_cooldown`, `heal_max_restarts`).
+When adding or editing a service, the wizard covers every field: name, image, compose files, compose project, container name, env file, behaviour flags (`auto_update`, `auto_start`, `auto_heal`, `compose_watch`, `health_grace`, `heal_cooldown`, `heal_max_restarts`), and resource alert thresholds (`cpu_threshold`, `memory_threshold`).
+
+## Warden config wizard
+
+`dockward warden-config` is the equivalent wizard for the warden config file.
+
+```sh
+dockward warden-config --config /etc/dockward/warden.json
+```
+
+`--config` defaults to `/etc/dockward/warden.json`.
+
+### Session flow
+
+```
+Creating new warden config: /etc/dockward/warden.json
+
+[API]
+  Listen port [8080]:
+  Warden token ($ENV_VAR supported) []: $DOCKWARD_WARDEN_TOKEN
+  State file path (persists ring buffer across restarts, leave empty to disable) []: /var/lib/dockward/warden-state.json
+
+[Agents] (0 configured)
+
+  a) Add agent
+  s) Save and exit
+  q) Quit without saving
+
+Choice: a
+
+[Agent]
+  ID (display name) []: ovh-01
+  URL (agent base URL for heartbeat, e.g. http://host:9090) []: http://ovh-01.internal:9090
+  Token (must match agent push.token, $ENV_VAR supported) []: $DOCKWARD_AGENT_TOKEN_OVH01
+```
+
+### Agents menu
+
+| Option | Action |
+|--------|--------|
+| `a` | Add a new agent |
+| `e` | Select and edit an existing agent by number |
+| `r` | Remove an agent by number |
+| `s` | Save the config file and exit |
+| `q` | Quit without saving |
 
 ## Notes
 
 - Compose files are entered as comma-separated paths: `/srv/app/docker-compose.yml, /srv/app/docker-compose.prod.yml`
 - Boolean fields prompt with `Y/n` (default true) or `y/N` (default false)
-- The wizard does not validate the config — run `dockward --config <path>` to confirm it loads correctly before restarting the service
+- Neither wizard validates the config — run the binary to confirm it loads correctly before restarting the service
 - To update a single field, run the wizard, navigate to that field, change it, then save

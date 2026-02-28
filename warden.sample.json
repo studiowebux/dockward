@@ -1,7 +1,8 @@
 {
   "api": {
     "port": "8080",
-    "token": "$DOCKWARD_WARDEN_TOKEN"
+    "token": "$DOCKWARD_WARDEN_TOKEN",
+    "state_path": "/var/lib/dockward/warden-state.json"
   },
   "agents": [
     {
