@@ -4,8 +4,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
+
+	"github.com/studiowebux/dockward/internal/hub"
+	"github.com/studiowebux/dockward/internal/logger"
 )
 
 // handleSSE serves the GET /events SSE stream.
@@ -44,7 +46,19 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
-	ch := s.hub.Subscribe()
+	// Extract client IP for connection limiting
+	clientIP := hub.ExtractClientIP(r)
+
+	// Subscribe with connection limiting
+	ch, err := s.hub.Subscribe(clientIP)
+	if err != nil {
+		if err == hub.ErrTooManyConnections {
+			http.Error(w, "too many connections", http.StatusTooManyRequests)
+		} else {
+			http.Error(w, "subscription failed", http.StatusInternalServerError)
+		}
+		return
+	}
 	defer s.hub.Unsubscribe(ch)
 
 	ctx := r.Context()

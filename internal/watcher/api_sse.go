@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/studiowebux/dockward/internal/hub"
 )
 
 // handleUIStream serves SSE endpoint for data-star UI
@@ -27,8 +29,19 @@ func (a *API) handleUIStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subscribe to audit events
-	ch := a.hub.Subscribe()
+	// Extract client IP for connection limiting
+	clientIP := hub.ExtractClientIP(r)
+
+	// Subscribe to audit events with connection limiting
+	ch, err := a.hub.Subscribe(clientIP)
+	if err != nil {
+		if err == hub.ErrTooManyConnections {
+			http.Error(w, "too many connections", http.StatusTooManyRequests)
+		} else {
+			http.Error(w, "subscription failed", http.StatusInternalServerError)
+		}
+		return
+	}
 	defer a.hub.Unsubscribe(ch)
 
 	// Send initial status

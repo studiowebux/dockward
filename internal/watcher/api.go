@@ -594,6 +594,21 @@ func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract client IP for connection limiting
+	clientIP := hub.ExtractClientIP(r)
+
+	// Subscribe to the hub with connection limiting
+	ch, err := a.hub.Subscribe(clientIP)
+	if err != nil {
+		if err == hub.ErrTooManyConnections {
+			http.Error(w, "too many connections", http.StatusTooManyRequests)
+		} else {
+			http.Error(w, "subscription failed", http.StatusInternalServerError)
+		}
+		return
+	}
+	defer a.hub.Unsubscribe(ch)
+
 	// Clear the server-level WriteTimeout so this long-lived connection is not
 	// killed after 30 s. Uses ResponseController (Go 1.20+).
 	rc := http.NewResponseController(w)
@@ -619,9 +634,6 @@ func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: %s\n\n", data)
 	}
 	flusher.Flush()
-
-	ch := a.hub.Subscribe()
-	defer a.hub.Unsubscribe(ch)
 
 	ctx := r.Context()
 	for {
