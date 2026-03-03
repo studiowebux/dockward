@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Push defines optional warden push settings for agent mode.
@@ -183,6 +184,48 @@ func (c *Config) validate() error {
 		if svc.AutoHeal && svc.ComposeProject == "" && svc.ContainerName == "" {
 			return fmt.Errorf("service[%d] %q: compose_project or container_name is required when auto_heal is true", i, svc.Name)
 		}
+		// Validate thresholds
+		if svc.CPUThreshold < 0 || svc.CPUThreshold > 100 {
+			return fmt.Errorf("service[%d] %q: cpu_threshold must be between 0-100, got %.0f", i, svc.Name, svc.CPUThreshold)
+		}
+		if svc.MemoryThreshold < 0 || svc.MemoryThreshold > 100 {
+			return fmt.Errorf("service[%d] %q: memory_threshold must be between 0-100, got %.0f", i, svc.Name, svc.MemoryThreshold)
+		}
+		// Validate timing values
+		if svc.HealthGrace < 0 {
+			return fmt.Errorf("service[%d] %q: health_grace cannot be negative", i, svc.Name)
+		}
+		if svc.HealCooldown < 0 {
+			return fmt.Errorf("service[%d] %q: heal_cooldown cannot be negative", i, svc.Name)
+		}
+		if svc.HealMaxRestarts < 0 {
+			return fmt.Errorf("service[%d] %q: heal_max_restarts cannot be negative", i, svc.Name)
+		}
+		// Validate compose files exist
+		for _, cf := range svc.ComposeFiles {
+			if _, err := os.Stat(cf); err != nil {
+				return fmt.Errorf("service[%d] %q: compose_file %q not found", i, svc.Name, cf)
+			}
+		}
 	}
+
+	// Validate global settings
+	if c.Registry.PollInterval < 10 {
+		return fmt.Errorf("registry.poll_interval must be at least 10 seconds, got %d", c.Registry.PollInterval)
+	}
+	if c.Registry.PollInterval > 86400 {
+		return fmt.Errorf("registry.poll_interval cannot exceed 86400 seconds (24 hours), got %d", c.Registry.PollInterval)
+	}
+	if c.Monitor.StatsInterval < 5 && c.Monitor.StatsInterval != 0 {
+		return fmt.Errorf("monitor.stats_interval must be at least 5 seconds or 0 (disabled), got %d", c.Monitor.StatsInterval)
+	}
+
+	// Validate API port
+	if c.API.Port != "" {
+		if port, err := strconv.Atoi(c.API.Port); err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("api.port must be a valid port number (1-65535), got %q", c.API.Port)
+		}
+	}
+
 	return nil
 }

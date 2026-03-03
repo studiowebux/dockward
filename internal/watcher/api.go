@@ -108,6 +108,21 @@ func (a *API) handleTriggerAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Basic rate limiting check - only one trigger per service at a time
+	deployCount := 0
+	for _, svc := range a.updater.cfg.Services {
+		if a.updater.IsDeploying(svc.Name) {
+			deployCount++
+		}
+	}
+	if deployCount > 0 {
+		writeJSON(w, map[string]string{
+			"status": "rate_limited",
+			"message": fmt.Sprintf("%d services already deploying", deployCount),
+		})
+		return
+	}
+
 	log.Printf("[api] manual trigger: all services")
 	go a.updater.pollAll(context.Background())
 
