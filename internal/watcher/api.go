@@ -711,7 +711,7 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
 
 <h2>Services</h2>
 <table>
-<thead><tr><th>Name</th><th>Status</th><th>Image</th><th>Digest</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
+<thead><tr><th>Name</th><th>Status</th><th>Next Check</th><th>Image</th><th>Digest</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
 <tbody id="status-body">
 {{range .Services}}
 <tr>
@@ -729,6 +729,14 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
     {{end}}
   </td>
   <td class="{{.Status}}">{{.Status}}</td>
+  <td style="color:var(--text-muted);font-size:11px">
+    {{if .NextCheck}}
+      <span title="Next check at {{.NextCheck.Format "15:04:05"}}">{{.NextCheck.Sub $.Now | formatDuration}}</span>
+    {{else}}--{{end}}
+    {{if eq .CheckStatus "checking"}}
+      <span style="color:var(--warning)"> (checking...)</span>
+    {{end}}
+  </td>
   <td style="color:var(--text-muted)">{{if .Image}}{{.Image}}{{else}}--{{end}}</td>
   <td style="color:var(--text-muted)">{{if .ImageDigest}}{{.ImageDigest}}{{else}}--{{end}}</td>
   <td>{{if .HasStats}}{{printf "%.0f" .CPUPercent}}% / {{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
@@ -737,6 +745,7 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
   <td>{{.RestartsTotal}}</td>
   <td>
     <button onclick="triggerService('{{.Name}}')">Trigger</button>
+    <button onclick="redeployService('{{.Name}}')">Redeploy</button>
     {{if .Blocked}}&nbsp;<button onclick="unblockService('{{.Name}}')">Unblock</button>{{end}}
   </td>
 </tr>
@@ -750,7 +759,7 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
 <tbody id="events-body">
 {{range .Events}}
 <tr>
-  <td style="white-space:nowrap;color:var(--text-dim)">{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
+  <td style="white-space:nowrap;color:var(--text-dim)" title="{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
   <td style="color:var(--text-muted)">{{.Service}}</td>
   <td>{{.Event}}</td>
   <td class="{{.Level}}">{{.Level}}</td>
@@ -764,7 +773,28 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 function triggerService(name){
-  fetch('/trigger/'+encodeURIComponent(name),{method:'POST'}).catch(function(){});
+  var btn=event.target;
+  btn.disabled=true;
+  btn.textContent='Triggering...';
+  fetch('/trigger/'+encodeURIComponent(name),{method:'POST'})
+    .then(function(){btn.textContent='Triggered!';setTimeout(function(){btn.disabled=false;btn.textContent='Trigger';},2000);})
+    .catch(function(){btn.disabled=false;btn.textContent='Error';setTimeout(function(){btn.textContent='Trigger';},2000);});
+}
+function redeployService(name){
+  if(!confirm('Redeploy '+name+'? This will run docker compose up -d.'))return;
+  fetch('/command-preview/'+encodeURIComponent(name))
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(confirm('Execute: '+data.command+'?')){
+        var btn=event.target;
+        btn.disabled=true;
+        btn.textContent='Redeploying...';
+        fetch('/redeploy/'+encodeURIComponent(name),{method:'POST'})
+          .then(function(){btn.textContent='Started!';setTimeout(function(){btn.disabled=false;btn.textContent='Redeploy';},2000);})
+          .catch(function(){btn.disabled=false;btn.textContent='Error';setTimeout(function(){btn.textContent='Redeploy';},2000);});
+      }
+    })
+    .catch(function(){alert('Failed to get command preview');});
 }
 function unblockService(name){
   fetch('/unblock/'+encodeURIComponent(name),{method:'POST'}).catch(function(){});
@@ -812,7 +842,23 @@ function refreshStatus(){
       var s=data.services[i];
       var cpu=s.has_stats?Math.round(s.cpu_percent)+'% / '+Math.round(s.memory_percent)+'%':'--';
       var actions='<button onclick="triggerService(\''+esc(s.name)+'\')">Trigger</button>';
+      actions+=' <button onclick="redeployService(\''+esc(s.name)+'\')">Redeploy</button>';
       if(s.blocked){actions+=' <button onclick="unblockService(\''+esc(s.name)+'\')">Unblock</button>';}
+
+      // Calculate next check timing
+      var nextCheckText='--';
+      if(s.next_check){
+        var next=new Date(s.next_check);
+        var now=new Date();
+        var diff=Math.round((next-now)/1000);
+        if(diff>0){
+          if(diff<60)nextCheckText=diff+'s';
+          else if(diff<3600)nextCheckText=Math.round(diff/60)+'m';
+          else nextCheckText=Math.round(diff/3600)+'h';
+        }
+      }
+      if(s.check_status==='checking')nextCheckText+=' <span style="color:var(--warning)">(checking...)</span>';
+
       var nameCell=esc(s.name);
       if(s.containers&&s.containers.length){
         var cdivs='';
@@ -825,6 +871,7 @@ function refreshStatus(){
       rows+='<tr>'+
         '<td>'+nameCell+'</td>'+
         '<td class="'+esc(s.status)+'">'+esc(s.status)+'</td>'+
+        '<td style="color:var(--text-muted);font-size:11px">'+nextCheckText+'</td>'+
         '<td style="color:var(--text-muted)">'+(s.image?esc(s.image):'--')+'</td>'+
         '<td style="color:var(--text-muted)">'+(s.image_digest?esc(s.image_digest):'--')+'</td>'+
         '<td>'+esc(cpu)+'</td>'+
