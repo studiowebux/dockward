@@ -123,8 +123,9 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/trigger/")
-	if serviceName == "" {
-		http.Error(w, "service name required", http.StatusBadRequest)
+	serviceName = strings.TrimSpace(serviceName)
+	if serviceName == "" || strings.ContainsAny(serviceName, "/\\..") {
+		http.Error(w, "invalid service name", http.StatusBadRequest)
 		return
 	}
 
@@ -875,6 +876,7 @@ function toggleTheme(){
 })();
 
 var es=new EventSource('/ui/events');
+var sseRetryCount=0;
 es.onmessage=function(evt){
   var e;try{e=JSON.parse(evt.data);}catch(_){return;}
   var tbody=document.getElementById('events-body');
@@ -890,11 +892,33 @@ es.onmessage=function(evt){
   tbody.insertAdjacentHTML('afterbegin',row);
   while(tbody.rows.length>50){tbody.deleteRow(-1);}
 };
+es.onerror=function(){
+  sseRetryCount++;
+  if(sseRetryCount>5){
+    es.close();
+    console.error('SSE connection failed after 5 retries');
+  }
+};
+es.onopen=function(){
+  sseRetryCount=0;
+};
 
 function refreshStatus(){
-  fetch('/status').then(function(r){return r.json();}).then(function(data){
-    var tbody=document.getElementById('status-body');
-    if(!tbody)return;
+  fetch('/status')
+    .then(function(r){
+      if(!r.ok){
+        console.error('Failed to fetch status:', r.status);
+        return null;
+      }
+      return r.json();
+    })
+    .then(function(data){
+      if(!data || !data.services){
+        console.error('Invalid status response');
+        return;
+      }
+      var tbody=document.getElementById('status-body');
+      if(!tbody)return;
     var openDetails={};
     tbody.querySelectorAll('details[data-svc]').forEach(function(d){
       if(d.open)openDetails[d.getAttribute('data-svc')]=true;
@@ -1002,8 +1026,9 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/redeploy/")
-	if serviceName == "" {
-		http.Error(w, "service name required", http.StatusBadRequest)
+	serviceName = strings.TrimSpace(serviceName)
+	if serviceName == "" || strings.ContainsAny(serviceName, "/\\..") {
+		http.Error(w, "invalid service name", http.StatusBadRequest)
 		return
 	}
 
@@ -1062,8 +1087,9 @@ func (a *API) handleCommandPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/command-preview/")
-	if serviceName == "" {
-		http.Error(w, "service name required", http.StatusBadRequest)
+	serviceName = strings.TrimSpace(serviceName)
+	if serviceName == "" || strings.ContainsAny(serviceName, "/\\..") {
+		http.Error(w, "invalid service name", http.StatusBadRequest)
 		return
 	}
 
