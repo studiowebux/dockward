@@ -26,6 +26,7 @@ type Config struct {
 	API           API           `json:"api"`
 	Audit         Audit         `json:"audit"`
 	Monitor       Monitor       `json:"monitor"`
+	DockerHealth  DockerHealth  `json:"docker_health"`
 	Notifications Notifications `json:"notifications"`
 	Push          Push          `json:"push"`
 	Services      []Service     `json:"services"`
@@ -52,6 +53,12 @@ type Registry struct {
 // Monitor controls resource stat collection (CPU, memory).
 type Monitor struct {
 	StatsInterval int `json:"stats_interval"` // seconds; defaults to registry.poll_interval if unset
+}
+
+// DockerHealth controls Docker daemon health checks.
+type DockerHealth struct {
+	CheckInterval int `json:"check_interval"` // seconds; how often to ping Docker daemon (default: 30)
+	Timeout       int `json:"timeout"`        // seconds; timeout for each ping request (default: 5)
 }
 
 // Notifications defines all notification channels.
@@ -149,6 +156,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.Monitor.StatsInterval <= 0 {
 		c.Monitor.StatsInterval = c.Registry.PollInterval
+	}
+	if c.DockerHealth.CheckInterval <= 0 {
+		c.DockerHealth.CheckInterval = 30
+	}
+	if c.DockerHealth.Timeout <= 0 {
+		c.DockerHealth.Timeout = 5
 	}
 	if c.API.Port == "" {
 		c.API.Port = "9090"
@@ -296,6 +309,23 @@ func (c *Config) validate() error {
 	}
 	if c.Monitor.StatsInterval < 5 && c.Monitor.StatsInterval != 0 {
 		return fmt.Errorf("monitor.stats_interval must be at least 5 seconds or 0 (disabled), got %d", c.Monitor.StatsInterval)
+	}
+
+	// Validate Docker health check settings
+	if c.DockerHealth.CheckInterval < 5 {
+		return fmt.Errorf("docker_health.check_interval must be at least 5 seconds, got %d", c.DockerHealth.CheckInterval)
+	}
+	if c.DockerHealth.CheckInterval > 3600 {
+		return fmt.Errorf("docker_health.check_interval cannot exceed 3600 seconds (1 hour), got %d", c.DockerHealth.CheckInterval)
+	}
+	if c.DockerHealth.Timeout < 1 {
+		return fmt.Errorf("docker_health.timeout must be at least 1 second, got %d", c.DockerHealth.Timeout)
+	}
+	if c.DockerHealth.Timeout > 30 {
+		return fmt.Errorf("docker_health.timeout cannot exceed 30 seconds, got %d", c.DockerHealth.Timeout)
+	}
+	if c.DockerHealth.Timeout >= c.DockerHealth.CheckInterval {
+		return fmt.Errorf("docker_health.timeout (%ds) must be less than check_interval (%ds)", c.DockerHealth.Timeout, c.DockerHealth.CheckInterval)
 	}
 
 	// Validate API port

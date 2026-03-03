@@ -16,6 +16,7 @@ import (
 	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/compose"
 	"github.com/studiowebux/dockward/internal/config"
+	"github.com/studiowebux/dockward/internal/docker"
 	"github.com/studiowebux/dockward/internal/hub"
 	"github.com/studiowebux/dockward/internal/saferun"
 )
@@ -23,14 +24,15 @@ import (
 // API exposes HTTP endpoints for triggering updates, health, and metrics.
 // Listens on localhost only.
 type API struct {
-	updater    *Updater
-	healer     *Healer
-	metrics    *Metrics
-	monitor    *Monitor
-	audit      *audit.Logger
-	hub        *hub.Hub
-	server     *http.Server
-	httpServer *http.Server // For graceful shutdown
+	updater      *Updater
+	healer       *Healer
+	metrics      *Metrics
+	monitor      *Monitor
+	audit        *audit.Logger
+	hub          *hub.Hub
+	dockerHealth *docker.HealthChecker
+	server       *http.Server
+	httpServer   *http.Server // For graceful shutdown
 }
 
 var (
@@ -94,18 +96,19 @@ func (b *broadcaster) Broadcast(e audit.Entry) {
 }
 
 // NewAPI creates the trigger/metrics API on the given address and port.
-func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, address string, port string) *API {
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, address string, port string) *API {
 	h := hub.NewHub()
 	al.WithBroadcast(&broadcaster{hub: h})
 
 	mux := http.NewServeMux()
 	api := &API{
-		updater: updater,
-		healer:  healer,
-		metrics: metrics,
-		monitor: monitor,
-		audit:   al,
-		hub:     h,
+		updater:      updater,
+		healer:       healer,
+		metrics:      metrics,
+		monitor:      monitor,
+		audit:        al,
+		dockerHealth: dockerHealth,
+		hub:          h,
 		server: &http.Server{
 			Addr:              address + ":" + port,
 			Handler:           mux,
@@ -544,9 +547,49 @@ func (a *API) handleUnblockService(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GET /health - watcher health check
+// GET /health - watcher health check with component status
 func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]string{"status": "ok"})
+	dockerStatus := a.dockerHealth.Status()
+
+	// Overall status: healthy if Docker is healthy, unhealthy otherwise
+	overallStatus := "healthy"
+	statusCode := http.StatusOK
+
+	if !dockerStatus.Healthy {
+		overallStatus = "unhealthy"
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	response := map[string]interface{}{
+		"status": overallStatus,
+		"components": map[string]interface{}{
+			"http": map[string]bool{
+				"healthy": true,
+			},
+			"docker": map[string]interface{}{
+				"healthy":            dockerStatus.Healthy,
+				"last_check":         dockerStatus.LastCheck.Format(time.RFC3339),
+				"consecutive_fails":  dockerStatus.ConsecutiveFails,
+			},
+		},
+	}
+
+	// Add optional fields only when available
+	if !dockerStatus.LastHealthyCheck.IsZero() {
+		response["components"].(map[string]interface{})["docker"].(map[string]interface{})["last_healthy_check"] = dockerStatus.LastHealthyCheck.Format(time.RFC3339)
+	}
+	if dockerStatus.DockerVersion != "" {
+		response["components"].(map[string]interface{})["docker"].(map[string]interface{})["docker_version"] = dockerStatus.DockerVersion
+	}
+	if dockerStatus.APIVersion != "" {
+		response["components"].(map[string]interface{})["docker"].(map[string]interface{})["api_version"] = dockerStatus.APIVersion
+	}
+	if dockerStatus.LastError != "" {
+		response["components"].(map[string]interface{})["docker"].(map[string]interface{})["last_error"] = dockerStatus.LastError
+	}
+
+	w.WriteHeader(statusCode)
+	writeJSON(w, response)
 }
 
 // GET /metrics - Prometheus-compatible metrics

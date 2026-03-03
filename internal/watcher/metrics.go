@@ -23,6 +23,11 @@ type Metrics struct {
 	lastPollTime   time.Time
 	pollCount      int64
 	startTime      time.Time
+
+	// Docker daemon health
+	dockerHealthy          bool
+	dockerConsecutiveFails int
+	dockerCheckCount       int64
 }
 
 // NewMetrics creates an initialized metrics collector.
@@ -105,6 +110,14 @@ func (m *Metrics) RecordPoll() {
 	m.mu.Lock()
 	m.pollCount++
 	m.lastPollTime = time.Now()
+	m.mu.Unlock()
+}
+
+func (m *Metrics) SetDockerHealth(healthy bool, consecutiveFails int) {
+	m.mu.Lock()
+	m.dockerHealthy = healthy
+	m.dockerConsecutiveFails = consecutiveFails
+	m.dockerCheckCount++
 	m.mu.Unlock()
 }
 
@@ -238,6 +251,23 @@ func (m *Metrics) Prometheus() string {
 	b.WriteString("# HELP watcher_uptime_seconds Seconds since watcher started\n")
 	b.WriteString("# TYPE watcher_uptime_seconds gauge\n")
 	fmt.Fprintf(&b, "watcher_uptime_seconds %.0f\n", time.Since(m.startTime).Seconds())
+
+	// Docker daemon health metrics
+	b.WriteString("# HELP docker_daemon_healthy Whether Docker daemon is healthy (1) or not (0)\n")
+	b.WriteString("# TYPE docker_daemon_healthy gauge\n")
+	v := 0
+	if m.dockerHealthy {
+		v = 1
+	}
+	fmt.Fprintf(&b, "docker_daemon_healthy %d\n", v)
+
+	b.WriteString("# HELP docker_daemon_consecutive_failures Consecutive Docker daemon health check failures\n")
+	b.WriteString("# TYPE docker_daemon_consecutive_failures gauge\n")
+	fmt.Fprintf(&b, "docker_daemon_consecutive_failures %d\n", m.dockerConsecutiveFails)
+
+	b.WriteString("# HELP docker_daemon_checks_total Total Docker daemon health checks performed\n")
+	b.WriteString("# TYPE docker_daemon_checks_total counter\n")
+	fmt.Fprintf(&b, "docker_daemon_checks_total %d\n", m.dockerCheckCount)
 
 	return b.String()
 }

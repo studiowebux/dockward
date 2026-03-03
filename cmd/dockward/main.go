@@ -92,6 +92,13 @@ func main() {
 	dc := docker.NewClient()
 	rc := registry.NewClient(cfg.Registry.URL, cfg.Registry.Insecure)
 
+	// Create Docker health checker with configured intervals
+	dockerHealth := docker.NewHealthChecker(
+		dc,
+		time.Duration(cfg.DockerHealth.CheckInterval)*time.Second,
+		time.Duration(cfg.DockerHealth.Timeout)*time.Second,
+	)
+
 	// Create audit logger (no-op when path is empty).
 	auditLog, err := audit.New(cfg.Audit.Path)
 	if err != nil {
@@ -116,10 +123,16 @@ func main() {
 		svcNames = append(svcNames, svc.Name)
 	}
 	metrics.SeedServices(svcNames)
+
+	// Wire Docker health checker to update metrics
+	dockerHealth.SetOnCheck(func(healthy bool, consecutiveFails int) {
+		metrics.SetDockerHealth(healthy, consecutiveFails)
+	})
+
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
 	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
-	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, cfg.API.Address, cfg.API.Port)
+	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, dockerHealth, cfg.API.Address, cfg.API.Port)
 
 	// Create shutdown coordinator and register managers
 	coordinator := shutdown.NewCoordinator()
@@ -154,6 +167,7 @@ func main() {
 	})
 
 	// Start goroutines with panic recovery.
+	saferun.RunWithRecovery("docker-health", ctx, dockerHealth.Start)
 	saferun.RunWithRecovery("updater", ctx, updater.Run)
 	saferun.RunWithRecovery("healer", ctx, healer.Run)
 	saferun.RunWithRecovery("monitor", ctx, monitor.Run)

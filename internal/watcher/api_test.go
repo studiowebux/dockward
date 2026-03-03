@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/studiowebux/dockward/internal/audit"
+	"github.com/studiowebux/dockward/internal/docker"
 	"github.com/studiowebux/dockward/internal/hub"
 )
 
@@ -19,7 +21,12 @@ func testAPI(al *audit.Logger) *API {
 	if al != nil {
 		al.WithBroadcast(&broadcaster{hub: h})
 	}
-	return &API{audit: al, hub: h}
+
+	// Create a mock Docker health checker for testing
+	dc := docker.NewClient()
+	dockerHealth := docker.NewHealthChecker(dc, 30*time.Second, 5*time.Second)
+
+	return &API{audit: al, hub: h, dockerHealth: dockerHealth}
 }
 
 func TestHandleHealth_Returns200(t *testing.T) {
@@ -29,8 +36,24 @@ func TestHandleHealth_Returns200(t *testing.T) {
 
 	api.handleHealth(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("want 200, got %d", w.Code)
+	// Health checker starts in unhealthy state until first check
+	// Either 200 (healthy) or 503 (unhealthy) are valid responses
+	if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 200 or 503, got %d", w.Code)
+	}
+
+	// Verify response structure
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Check for required fields
+	if _, ok := response["status"]; !ok {
+		t.Error("response missing 'status' field")
+	}
+	if _, ok := response["components"]; !ok {
+		t.Error("response missing 'components' field")
 	}
 }
 
