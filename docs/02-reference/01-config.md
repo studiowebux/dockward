@@ -76,17 +76,23 @@ Controls container resource stat collection (CPU, memory). Independent of regist
 
 ## `api`
 
-Controls the HTTP API server. The API binds to `127.0.0.1` only — it is never exposed externally.
+Controls the HTTP API server.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `address` | string | `"127.0.0.1"` | Bind address for the API server. Use `"0.0.0.0"` to expose externally (not recommended without authentication) |
 | `port` | string | `"9090"` | Port for the API and metrics server |
 
 ```json
 "api": {
+  "address": "127.0.0.1",
   "port": "9090"
 }
 ```
+
+:::warning
+Setting `address: "0.0.0.0"` exposes the API to your network. The API has **no authentication** - only do this on trusted networks or behind a reverse proxy with auth.
+:::
 
 ## `audit`
 
