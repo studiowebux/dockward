@@ -291,7 +291,7 @@ func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) err
 	}
 
 	logger.Printf("[updater] %s: compose file changed, redeploying", svc.Name)
-	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		return fmt.Errorf("compose up (drift): %w", err)
 	}
 
@@ -551,7 +551,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 		switch status {
 		case containerStuck:
 			logger.Printf("[updater] %s: containers stuck (created/restarting), forcing down+up", svc.Name)
-			if err := compose.Restart(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+			if err := compose.Restart(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 				return fmt.Errorf("compose restart (stuck containers): %w", err)
 			}
 			u.dispatcher.Send(ctx, notify.Alert{
@@ -562,7 +562,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 			})
 		default:
 			logger.Printf("[updater] %s: images up to date but no containers, starting compose project", svc.Name)
-			if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+			if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 				return fmt.Errorf("compose up (no running container): %w", err)
 			}
 			u.dispatcher.Send(ctx, notify.Alert{
@@ -661,11 +661,11 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imag
 
 	// Step 2: Pull new images and recreate via compose.
 	logger.Printf("[updater] %s: pulling and deploying", svc.Name)
-	if err := compose.Pull(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	if err := compose.Pull(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose pull: %w", err)
 	}
-	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose up: %w", err)
 	}
@@ -840,7 +840,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 		return
 	}
 
-	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		logger.Printf("[updater] %s: rollback compose up failed: %v", svc.Name, err)
 		u.metrics.IncFailures(svc.Name)
 		u.dispatcher.Send(ctx, notify.Alert{

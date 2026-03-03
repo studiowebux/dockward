@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Push defines optional warden push settings for agent mode.
@@ -18,6 +21,7 @@ type Push struct {
 
 // Config is the top-level configuration.
 type Config struct {
+	Runtime       string        `json:"runtime"`        // Container runtime: "docker" or "podman", default: "docker"
 	Registry      Registry      `json:"registry"`
 	API           API           `json:"api"`
 	Audit         Audit         `json:"audit"`
@@ -134,6 +138,9 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) setDefaults() {
+	if c.Runtime == "" {
+		c.Runtime = "docker" // Default to docker for backward compatibility
+	}
 	if c.Registry.URL == "" {
 		c.Registry.URL = "http://localhost:5000"
 	}
@@ -163,6 +170,14 @@ func (c *Config) setDefaults() {
 }
 
 func (c *Config) validate() error {
+	// Validate runtime is either docker or podman
+	if c.Runtime != "docker" && c.Runtime != "podman" {
+		return fmt.Errorf("runtime must be 'docker' or 'podman', got %q", c.Runtime)
+	}
+
+	// Compile regex for project name validation once
+	projectNameRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
 	for i, svc := range c.Services {
 		if svc.Silent {
 			continue
@@ -170,6 +185,75 @@ func (c *Config) validate() error {
 		if svc.Name == "" {
 			return fmt.Errorf("service[%d]: name is required", i)
 		}
+
+		// Validate compose project name for security
+		if svc.ComposeProject != "" {
+			if !projectNameRegex.MatchString(svc.ComposeProject) {
+				return fmt.Errorf("service[%d] %q: compose_project contains invalid characters: must match ^[a-zA-Z0-9_-]{1,64}$ (got %q)",
+					i, svc.Name, svc.ComposeProject)
+			}
+		}
+
+		// Validate compose files with security checks
+		for j, cf := range svc.ComposeFiles {
+			// Must be absolute path
+			if !filepath.IsAbs(cf) {
+				return fmt.Errorf("service[%d] %q: compose_file[%d] must be absolute path: %q", i, svc.Name, j, cf)
+			}
+
+			// Check for path traversal attempts
+			if strings.Contains(cf, "..") {
+				return fmt.Errorf("service[%d] %q: compose_file[%d] contains path traversal attempt: %q", i, svc.Name, j, cf)
+			}
+
+			// Clean the path
+			cleanPath := filepath.Clean(cf)
+
+			// Verify file exists and is regular file
+			info, err := os.Stat(cleanPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("service[%d] %q: compose_file[%d] not found: %q", i, svc.Name, j, cleanPath)
+				}
+				return fmt.Errorf("service[%d] %q: compose_file[%d] stat error: %q: %w", i, svc.Name, j, cleanPath, err)
+			}
+
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("service[%d] %q: compose_file[%d] is not a regular file: %q (mode: %v)",
+					i, svc.Name, j, cleanPath, info.Mode())
+			}
+		}
+
+		// Validate env file with security checks
+		if svc.EnvFile != "" {
+			// Must be absolute path
+			if !filepath.IsAbs(svc.EnvFile) {
+				return fmt.Errorf("service[%d] %q: env_file must be absolute path: %q", i, svc.Name, svc.EnvFile)
+			}
+
+			// Check for path traversal attempts
+			if strings.Contains(svc.EnvFile, "..") {
+				return fmt.Errorf("service[%d] %q: env_file contains path traversal attempt: %q", i, svc.Name, svc.EnvFile)
+			}
+
+			// Clean the path
+			cleanPath := filepath.Clean(svc.EnvFile)
+
+			// Verify file exists and is regular file
+			info, err := os.Stat(cleanPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("service[%d] %q: env_file not found: %q", i, svc.Name, cleanPath)
+				}
+				return fmt.Errorf("service[%d] %q: env_file stat error: %q: %w", i, svc.Name, cleanPath, err)
+			}
+
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("service[%d] %q: env_file is not a regular file: %q (mode: %v)",
+					i, svc.Name, cleanPath, info.Mode())
+			}
+		}
+
 		if svc.AutoUpdate {
 			if len(svc.Images) == 0 {
 				return fmt.Errorf("service[%d] %q: images is required when auto_update is true", i, svc.Name)
@@ -200,12 +284,6 @@ func (c *Config) validate() error {
 		}
 		if svc.HealMaxRestarts < 0 {
 			return fmt.Errorf("service[%d] %q: heal_max_restarts cannot be negative", i, svc.Name)
-		}
-		// Validate compose files exist
-		for _, cf := range svc.ComposeFiles {
-			if _, err := os.Stat(cf); err != nil {
-				return fmt.Errorf("service[%d] %q: compose_file %q not found", i, svc.Name, cf)
-			}
 		}
 	}
 

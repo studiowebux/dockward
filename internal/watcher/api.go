@@ -8,6 +8,7 @@ import (
 	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,22 @@ type API struct {
 	audit   *audit.Logger
 	hub     *hub.Hub
 	server  *http.Server
+}
+
+var (
+	// serviceNameRegex enforces strict service name validation: alphanumeric + dash + underscore only, 1-64 chars
+	// Same pattern as compose project names for consistency
+	serviceNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+)
+
+// validateServiceName ensures the service name contains only safe characters.
+// Returns empty string if invalid, or the validated name if valid.
+func validateServiceName(name string) string {
+	name = strings.TrimSpace(name)
+	if !serviceNameRegex.MatchString(name) {
+		return ""
+	}
+	return name
 }
 
 // broadcaster adapts hub.Hub to the audit.Broadcaster interface.
@@ -143,9 +160,9 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/trigger/")
-	serviceName = strings.TrimSpace(serviceName)
-	if serviceName == "" || strings.ContainsAny(serviceName, "/\\..") {
-		http.Error(w, "invalid service name", http.StatusBadRequest)
+	serviceName = validateServiceName(serviceName)
+	if serviceName == "" {
+		http.Error(w, "invalid service name: must match ^[a-zA-Z0-9_-]{1,64}$", http.StatusBadRequest)
 		return
 	}
 
@@ -313,8 +330,9 @@ func (a *API) handleStatusService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/status/")
+	serviceName = validateServiceName(serviceName)
 	if serviceName == "" {
-		http.Error(w, "service name required", http.StatusBadRequest)
+		http.Error(w, "invalid service name: must match ^[a-zA-Z0-9_-]{1,64}$", http.StatusBadRequest)
 		return
 	}
 
@@ -469,8 +487,9 @@ func (a *API) handleUnblockService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/blocked/")
+	serviceName = validateServiceName(serviceName)
 	if serviceName == "" {
-		http.Error(w, "service name required", http.StatusBadRequest)
+		http.Error(w, "invalid service name: must match ^[a-zA-Z0-9_-]{1,64}$", http.StatusBadRequest)
 		return
 	}
 
@@ -651,8 +670,9 @@ func (a *API) handleUnblockPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/unblock/")
+	serviceName = validateServiceName(serviceName)
 	if serviceName == "" {
-		http.Error(w, "service name required", http.StatusBadRequest)
+		http.Error(w, "invalid service name: must match ^[a-zA-Z0-9_-]{1,64}$", http.StatusBadRequest)
 		return
 	}
 
@@ -1544,9 +1564,9 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/redeploy/")
-	serviceName = strings.TrimSpace(serviceName)
-	if serviceName == "" || strings.ContainsAny(serviceName, "/\\..") {
-		http.Error(w, "invalid service name", http.StatusBadRequest)
+	serviceName = validateServiceName(serviceName)
+	if serviceName == "" {
+		http.Error(w, "invalid service name: must match ^[a-zA-Z0-9_-]{1,64}$", http.StatusBadRequest)
 		return
 	}
 
@@ -1571,7 +1591,7 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 	logger.Printf("[api] force redeploy: %s", svc.Name)
 	saferun.Go("force-redeploy-"+svc.Name, func() {
 		ctx := context.Background()
-		if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+		if err := compose.Up(ctx, a.updater.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 			logger.Printf("[api] ERROR: force redeploy failed for %s: %v", svc.Name, err)
 			if werr := a.audit.Write(audit.Entry{
 				Service: svc.Name,
@@ -1605,9 +1625,9 @@ func (a *API) handleCommandPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := strings.TrimPrefix(r.URL.Path, "/command-preview/")
-	serviceName = strings.TrimSpace(serviceName)
-	if serviceName == "" || strings.ContainsAny(serviceName, "/\\..") {
-		http.Error(w, "invalid service name", http.StatusBadRequest)
+	serviceName = validateServiceName(serviceName)
+	if serviceName == "" {
+		http.Error(w, "invalid service name: must match ^[a-zA-Z0-9_-]{1,64}$", http.StatusBadRequest)
 		return
 	}
 
@@ -1624,18 +1644,23 @@ func (a *API) handleCommandPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the docker compose command
-	cmd := "docker compose"
-	for _, f := range svc.ComposeFiles {
-		cmd += fmt.Sprintf(" -f %s", f)
+	// Build the compose command using configured runtime
+	runtime := a.updater.cfg.Runtime
+	if runtime == "" {
+		runtime = "docker" // fallback for safety
 	}
+	cmd := fmt.Sprintf("%s compose", runtime)
 	if svc.ComposeProject != "" {
 		cmd += fmt.Sprintf(" -p %s", svc.ComposeProject)
 	}
-	if svc.EnvFile != "" {
-		cmd += fmt.Sprintf(" --env-file %s", svc.EnvFile)
+	for _, f := range svc.ComposeFiles {
+		cmd += fmt.Sprintf(" -f %s", f)
 	}
+	// Note: env file is loaded into environment, not passed as --env-file
 	cmd += " up -d"
+	if svc.EnvFile != "" {
+		cmd += fmt.Sprintf(" # (with env from %s)", svc.EnvFile)
+	}
 
 	writeJSON(w, map[string]string{
 		"service": serviceName,

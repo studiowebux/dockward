@@ -17,6 +17,7 @@ For a walkthrough with annotated examples, see [Configuration](../01-getting-sta
 
 ```json
 {
+  "runtime": "docker",
   "registry": { ... },
   "api": { ... },
   "audit": { ... },
@@ -26,6 +27,22 @@ For a walkthrough with annotated examples, see [Configuration](../01-getting-sta
   "services": [ ... ]
 }
 ```
+
+## `runtime`
+
+Specifies the container runtime to use for all compose operations.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `runtime` | string | `"docker"` | Container runtime executable: `"docker"` or `"podman"`. Both support the same `compose` subcommand syntax |
+
+```json
+"runtime": "podman"
+```
+
+:::tip
+Both Docker and Podman use the same compose command syntax (`docker compose` / `podman compose`), making them interchangeable. This setting determines which executable is called.
+:::
 
 ## `registry`
 
@@ -176,6 +193,7 @@ Validation failures at startup cause dockward to exit with a non-zero status. Ch
 
 ```json
 {
+  "runtime": "docker",
   "registry": {
     "url": "http://localhost:5000",
     "poll_interval": 300
