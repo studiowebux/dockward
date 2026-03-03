@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.12] - 2026-03-03
+
+### Fixed
+- **Web UI:** Completed data-star UI implementation with full SSE integration
+- Initial status fetch from `/status` endpoint on page load
+- Real-time service updates via SSE `/ui/stream`
+- All service actions working (trigger, redeploy, unblock)
+- Connection status indicator
+- Events table with audit log
+
+### Added
+- Helper functions for time formatting and service actions
+- Resource usage bars with color coding (warning/danger thresholds)
+- Container details display per service
+- Config flags visualization (U/H/S badges)
+
 ## [1.0.0-alpha.11] - 2026-03-03
 
 ### Changed
