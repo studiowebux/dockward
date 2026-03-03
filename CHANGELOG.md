@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.13] - 2026-03-03
+
+### Fixed
+- **Web UI:** Data-star module loading - restored `type="module"` attribute on script tag (was incorrectly removed in previous commit causing "Unexpected keyword 'export'" error)
+
 ## [1.0.0-alpha.12] - 2026-03-03
 
 ### Fixed
