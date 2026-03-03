@@ -793,32 +793,69 @@ const dataStarHTML = `<!DOCTYPE html>
   <!-- data-star.dev -->
   <script src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js"></script>
   <script>
-    // Wait for data-star to load, then initialize with SSE
+    // Initialize SSE connection after page load
     window.addEventListener('load', function() {
+      // Get the data-star store from the container element
+      const container = document.querySelector('[data-store]')
+
+      // Fetch initial status
+      fetch('/status')
+        .then(r => r.json())
+        .then(data => {
+          // Initialize store with current data
+          container.setAttribute('data-store', JSON.stringify({
+            services: data.services || [],
+            events: [],
+            connectionStatus: 'connected',
+            uptime: data.uptime_seconds || 0,
+            lastUpdate: new Date().toISOString()
+          }))
+        })
+        .catch(err => {
+          console.error('Failed to fetch initial status:', err)
+        })
+
       // Connect to SSE endpoint for real-time updates
       const eventSource = new EventSource('/ui/stream')
 
       // Handle status updates
       eventSource.addEventListener('status', (e) => {
-        const data = JSON.parse(e.data)
-        console.log('Status update:', data)
-        // TODO: Update UI with data-star reactive state
+        try {
+          const data = JSON.parse(e.data)
+          const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
+          currentStore.services = data.services || []
+          currentStore.uptime = data.uptime_seconds || 0
+          currentStore.lastUpdate = new Date().toISOString()
+          currentStore.connectionStatus = 'connected'
+          container.setAttribute('data-store', JSON.stringify(currentStore))
+        } catch (err) {
+          console.error('Failed to parse status update:', err)
+        }
       })
 
       // Handle audit events
       eventSource.addEventListener('audit', (e) => {
-        const event = JSON.parse(e.data)
-        console.log('Audit event:', event)
-        // TODO: Update events list with data-star
+        try {
+          const event = JSON.parse(e.data)
+          const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
+          currentStore.events = [event, ...(currentStore.events || [])].slice(0, 50)
+          container.setAttribute('data-store', JSON.stringify(currentStore))
+        } catch (err) {
+          console.error('Failed to parse audit event:', err)
+        }
       })
 
       // Handle connection errors
       eventSource.onerror = () => {
-        console.error('SSE connection error')
+        const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
+        currentStore.connectionStatus = 'error'
+        container.setAttribute('data-store', JSON.stringify(currentStore))
       }
 
       eventSource.onopen = () => {
-        console.log('SSE connected')
+        const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
+        currentStore.connectionStatus = 'connected'
+        container.setAttribute('data-store', JSON.stringify(currentStore))
       }
     })
   </script>
