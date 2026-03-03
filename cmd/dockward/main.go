@@ -12,6 +12,7 @@ import (
 	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/docker"
+	"github.com/studiowebux/dockward/internal/logger"
 	"github.com/studiowebux/dockward/internal/notify"
 	"github.com/studiowebux/dockward/internal/push"
 	"github.com/studiowebux/dockward/internal/registry"
@@ -24,6 +25,10 @@ import (
 var version = "dev"
 
 func main() {
+	// Initialize logger with syslog support
+	logger.Init("dockward")
+	defer logger.Close()
+
 	// Subcommand: dockward config [--config <path>]
 	// Interactive wizard to create or edit the agent config file.
 	if len(os.Args) > 1 && os.Args[1] == "config" {

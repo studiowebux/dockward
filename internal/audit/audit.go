@@ -11,6 +11,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,10 +47,14 @@ type Broadcaster interface {
 // Logger appends Entry values to a JSON Lines file.
 // A nil or zero-value Logger is safe to use — all operations are no-ops.
 type Logger struct {
-	mu    sync.Mutex
-	file  *os.File     // nil when disabled
-	push  Pusher       // nil when push is disabled
-	bcast Broadcaster  // nil when broadcast is disabled
+	mu        sync.Mutex
+	file      *os.File     // nil when disabled
+	push      Pusher       // nil when push is disabled
+	bcast     Broadcaster  // nil when broadcast is disabled
+	path      string       // path to log file
+	maxSizeMB int          // max size in MB before rotation (default: 100MB)
+	maxEvents int          // max events to keep in current file (default: 10000)
+	eventCount int         // current event count
 }
 
 // WithPush attaches a Pusher to the logger. Returns the same logger (fluent).
@@ -80,7 +87,104 @@ func New(path string) (*Logger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open audit log %s: %w", path, err)
 	}
-	return &Logger{file: f}, nil
+
+	// Count existing events in the file
+	eventCount := 0
+	if info, err := f.Stat(); err == nil && info.Size() > 0 {
+		// Reopen for reading to count lines
+		rf, err := os.Open(path)
+		if err == nil {
+			scanner := bufio.NewScanner(rf)
+			for scanner.Scan() {
+				eventCount++
+			}
+			rf.Close()
+		}
+	}
+
+	return &Logger{
+		file:       f,
+		path:       path,
+		maxSizeMB:  100,   // Default 100MB
+		maxEvents:  10000, // Default 10k events
+		eventCount: eventCount,
+	}, nil
+}
+
+// SetLimits configures rotation limits. Call after New().
+func (l *Logger) SetLimits(maxSizeMB, maxEvents int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if maxSizeMB > 0 {
+		l.maxSizeMB = maxSizeMB
+	}
+	if maxEvents > 0 {
+		l.maxEvents = maxEvents
+	}
+}
+
+// rotate moves the current log to a timestamped backup and starts fresh
+func (l *Logger) rotate() error {
+	if l.file == nil {
+		return nil
+	}
+
+	// Close current file
+	l.file.Close()
+
+	// Generate archive name with timestamp
+	now := time.Now()
+	archivePath := fmt.Sprintf("%s.%s.jsonl",
+		strings.TrimSuffix(l.path, ".jsonl"),
+		now.Format("20060102-150405"))
+
+	// Rename current to archive
+	if err := os.Rename(l.path, archivePath); err != nil {
+		// If rename fails, try to reopen original
+		f, _ := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		l.file = f
+		return fmt.Errorf("rotate rename failed: %w", err)
+	}
+
+	// Open new file
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("rotate open new: %w", err)
+	}
+
+	l.file = f
+	l.eventCount = 0
+	log.Printf("[audit] rotated log to %s", archivePath)
+
+	// Clean up old archives (keep last 5)
+	l.cleanOldArchives()
+
+	return nil
+}
+
+// cleanOldArchives removes old archive files, keeping only the most recent 5
+func (l *Logger) cleanOldArchives() {
+	dir := filepath.Dir(l.path)
+	base := filepath.Base(strings.TrimSuffix(l.path, ".jsonl"))
+	pattern := base + ".*.jsonl"
+
+	matches, err := filepath.Glob(filepath.Join(dir, pattern))
+	if err != nil || len(matches) <= 5 {
+		return
+	}
+
+	// Sort by name (timestamp makes them sortable)
+	sort.Strings(matches)
+
+	// Remove oldest ones
+	for i := 0; i < len(matches)-5; i++ {
+		if err := os.Remove(matches[i]); err == nil {
+			log.Printf("[audit] removed old archive: %s", matches[i])
+		}
+	}
 }
 
 // Write appends a JSON-encoded Entry followed by a newline.
@@ -97,7 +201,19 @@ func (l *Logger) Write(e Entry) error {
 		return fmt.Errorf("marshal audit entry: %w", err)
 	}
 	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Check if rotation needed before write
+	if l.shouldRotate() {
+		if err := l.rotate(); err != nil {
+			log.Printf("[audit] rotation failed: %v", err)
+		}
+	}
+
 	_, err = fmt.Fprintf(l.file, "%s\n", data)
+	if err == nil {
+		l.eventCount++
+	}
 	p := l.push
 	b := l.bcast
 	l.mu.Unlock()
@@ -177,4 +293,26 @@ func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.file.Close()
+}
+
+// shouldRotate checks if log should be rotated based on size or event count
+func (l *Logger) shouldRotate() bool {
+	if l.file == nil {
+		return false
+	}
+
+	// Check event count
+	if l.eventCount >= l.maxEvents {
+		return true
+	}
+
+	// Check file size
+	if info, err := l.file.Stat(); err == nil {
+		sizeMB := info.Size() / (1024 * 1024)
+		if sizeMB >= int64(l.maxSizeMB) {
+			return true
+		}
+	}
+
+	return false
 }

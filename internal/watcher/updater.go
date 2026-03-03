@@ -140,14 +140,96 @@ func (u *Updater) Run(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Cleanup ticker - every hour, clean old entries from maps
+	cleanupTicker := time.NewTicker(1 * time.Hour)
+	defer cleanupTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			u.pollAll(ctx)
+		case <-cleanupTicker.C:
+			u.cleanupOldEntries()
 		}
 	}
+}
+
+// cleanupOldEntries removes entries for services that no longer exist in config
+func (u *Updater) cleanupOldEntries() {
+	// Build set of current service names
+	currentServices := make(map[string]bool)
+	for _, svc := range u.cfg.Services {
+		currentServices[svc.Name] = true
+		for _, img := range svc.Images {
+			currentServices[svc.Name+"/"+img] = true
+		}
+	}
+
+	// Clean lastChecked
+	u.lastCheckedMu.Lock()
+	for k := range u.lastChecked {
+		if !currentServices[k] {
+			delete(u.lastChecked, k)
+		}
+	}
+	u.lastCheckedMu.Unlock()
+
+	// Clean checkStatus
+	u.checkStatusMu.Lock()
+	for k := range u.checkStatus {
+		if !currentServices[k] {
+			delete(u.checkStatus, k)
+		}
+	}
+	u.checkStatusMu.Unlock()
+
+	// Clean deployed
+	u.deployedMu.Lock()
+	for k := range u.deployed {
+		// Check if service/image key still exists
+		found := false
+		for svc := range currentServices {
+			if strings.HasPrefix(k, svc) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(u.deployed, k)
+		}
+	}
+	u.deployedMu.Unlock()
+
+	// Clean errored
+	u.erroredMu.Lock()
+	for k := range u.errored {
+		if !currentServices[k] {
+			delete(u.errored, k)
+		}
+	}
+	u.erroredMu.Unlock()
+
+	// Clean startAttempted
+	u.startAttemptedMu.Lock()
+	for k := range u.startAttempted {
+		if !currentServices[k] {
+			delete(u.startAttempted, k)
+		}
+	}
+	u.startAttemptedMu.Unlock()
+
+	// Clean composeHashes
+	u.composeHashesMu.Lock()
+	for k := range u.composeHashes {
+		if !currentServices[k] {
+			delete(u.composeHashes, k)
+		}
+	}
+	u.composeHashesMu.Unlock()
+
+	log.Printf("[updater] cleaned old entries from state maps")
 }
 
 func (u *Updater) pollAll(ctx context.Context) {

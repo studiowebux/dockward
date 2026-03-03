@@ -79,6 +79,8 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 	mux.HandleFunc("/audit", api.handleAudit)
 	mux.HandleFunc("/ui", api.handleUI)
 	mux.HandleFunc("/ui/events", api.handleUIEvents)
+	mux.HandleFunc("/ui/stream", api.handleUIStream)
+	mux.HandleFunc("/ui/v2", api.handleUIDataStar)
 	mux.HandleFunc("/unblock/", api.handleUnblockPost)
 	mux.HandleFunc("/redeploy/", api.handleForceRedeploy)
 	mux.HandleFunc("/command-preview/", api.handleCommandPreview)
@@ -1032,6 +1034,16 @@ setInterval(refreshStatus,15000);
 </script>
 </body>
 </html>`
+
+// GET /ui/v2 - data-star.dev powered UI
+func (a *API) handleUIDataStar(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// For now, return not implemented. The ui_datastar.html file exists but needs to be embedded
+	http.Error(w, "data-star UI available at /ui/v2 (not yet embedded)", http.StatusNotImplemented)
+}
 
 // POST /redeploy/<service> - force redeploy without image check
 func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
