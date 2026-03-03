@@ -6,7 +6,10 @@ import (
 
 func TestHub_Subscribe_ReceivesBroadcast(t *testing.T) {
 	h := NewHub()
-	ch := h.Subscribe()
+	ch, err := h.Subscribe("127.0.0.1")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
 	defer h.Unsubscribe(ch)
 
 	h.Broadcast([]byte("hello"))
@@ -23,8 +26,14 @@ func TestHub_Subscribe_ReceivesBroadcast(t *testing.T) {
 
 func TestHub_Broadcast_ReachesAllSubscribers(t *testing.T) {
 	h := NewHub()
-	ch1 := h.Subscribe()
-	ch2 := h.Subscribe()
+	ch1, err := h.Subscribe("127.0.0.1")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	ch2, err := h.Subscribe("127.0.0.2")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
 	defer h.Unsubscribe(ch1)
 	defer h.Unsubscribe(ch2)
 
@@ -44,7 +53,10 @@ func TestHub_Broadcast_ReachesAllSubscribers(t *testing.T) {
 
 func TestHub_Unsubscribe_StopsReceiving(t *testing.T) {
 	h := NewHub()
-	ch := h.Subscribe()
+	ch, err := h.Subscribe("127.0.0.1")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
 	h.Unsubscribe(ch)
 
 	// Channel is closed; reading from it should return immediately with zero value.
@@ -61,10 +73,13 @@ func TestHub_Broadcast_DropsForSlowClient(t *testing.T) {
 	// manually insert an unbuffered channel to test the drop path.
 	slowCh := make(chan []byte) // unbuffered — always "full"
 	h.mu.Lock()
-	h.clients[slowCh] = struct{}{}
+	h.clients[slowCh] = &ClientInfo{IP: "127.0.0.1", Channel: slowCh}
 	h.mu.Unlock()
 
-	fastCh := h.Subscribe()
+	fastCh, err := h.Subscribe("127.0.0.2")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
 	defer h.Unsubscribe(fastCh)
 
 	// Should not block even though slowCh is unbuffered.

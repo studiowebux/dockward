@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/studiowebux/dockward/internal/audit"
 	"github.com/studiowebux/dockward/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/studiowebux/dockward/internal/push"
 	"github.com/studiowebux/dockward/internal/registry"
 	"github.com/studiowebux/dockward/internal/saferun"
+	"github.com/studiowebux/dockward/internal/shutdown"
 	"github.com/studiowebux/dockward/internal/warden"
 	"github.com/studiowebux/dockward/internal/watcher"
 	"github.com/studiowebux/dockward/internal/wizard"
@@ -119,6 +121,14 @@ func main() {
 	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
 	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, cfg.API.Address, cfg.API.Port)
 
+	// Create shutdown coordinator and register managers
+	coordinator := shutdown.NewCoordinator()
+	coordinator.Register(updater)
+	coordinator.Register(healer)
+	coordinator.Register(monitor)
+	coordinator.Register(api)
+	coordinator.Register(auditLog)
+
 	// Context with signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -128,7 +138,18 @@ func main() {
 
 	saferun.Go("signal-handler", func() {
 		sig := <-sigCh
-		logger.Printf("received %s, shutting down", sig)
+		logger.Printf("received %s, starting graceful shutdown", sig)
+
+		// Create a context for shutdown with timeout
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+
+		// Perform graceful shutdown
+		if err := coordinator.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("graceful shutdown failed: %v", err)
+		}
+
+		// Cancel the main context to stop all goroutines
 		cancel()
 	})
 

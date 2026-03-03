@@ -23,13 +23,14 @@ import (
 // API exposes HTTP endpoints for triggering updates, health, and metrics.
 // Listens on localhost only.
 type API struct {
-	updater *Updater
-	healer  *Healer
-	metrics *Metrics
-	monitor *Monitor
-	audit   *audit.Logger
-	hub     *hub.Hub
-	server  *http.Server
+	updater    *Updater
+	healer     *Healer
+	metrics    *Metrics
+	monitor    *Monitor
+	audit      *audit.Logger
+	hub        *hub.Hub
+	server     *http.Server
+	httpServer *http.Server // For graceful shutdown
 }
 
 var (
@@ -145,8 +146,14 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 
 // Run starts the HTTP server. Blocks until ctx is cancelled.
 func (a *API) Run(ctx context.Context) {
+	// Store the server reference for graceful shutdown
+	a.httpServer = a.server
+
 	saferun.Go("api-shutdown", func() {
 		<-ctx.Done()
+		// Graceful shutdown is now handled by the Shutdown() method
+		// This is just a fallback for forceful close if needed
+		time.Sleep(35 * time.Second) // Wait longer than graceful shutdown timeout
 		if err := a.server.Close(); err != nil {
 			logger.Printf("[api] server close error: %v", err)
 		}
@@ -669,7 +676,20 @@ type uiData struct {
 }
 
 // uiTemplate is compiled once at startup.
-var uiTemplate = template.Must(template.New("ui").Parse(uiHTML))
+var uiTemplate = template.Must(template.New("ui").Funcs(template.FuncMap{
+	"formatDuration": func(d time.Duration) string {
+		if d < 0 {
+			return "now"
+		}
+		if d < time.Minute {
+			return fmt.Sprintf("%ds", int(d.Seconds()))
+		}
+		if d < time.Hour {
+			return fmt.Sprintf("%dm", int(d.Minutes()))
+		}
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	},
+}).Parse(uiHTML))
 
 // GET /ui - web dashboard
 func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {

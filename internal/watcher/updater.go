@@ -628,6 +628,14 @@ func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Ser
 }
 
 func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imageChange) error {
+	// Check if we're shutting down before starting a new deployment
+	select {
+	case <-ctx.Done():
+		logger.Printf("[updater] %s: context cancelled, skipping deploy", svc.Name)
+		return ctx.Err()
+	default:
+	}
+
 	// Atomic deploy guard: prevent concurrent deploys for the same service.
 	if !u.tryStartDeploy(svc.Name) {
 		logger.Printf("[updater] %s: deploy already in progress, skipping", svc.Name)

@@ -121,7 +121,10 @@ func TestHandleIngest_AppendsToStore(t *testing.T) {
 
 func TestHandleIngest_BroadcastsToSSEClients(t *testing.T) {
 	s := testServer()
-	ch := s.hub.Subscribe()
+	ch, err := s.hub.Subscribe("127.0.0.1")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
 	defer s.hub.Unsubscribe(ch)
 
 	entry := audit.Entry{Service: "svc", Event: "heal", Level: "warning", Message: "restarted"}
