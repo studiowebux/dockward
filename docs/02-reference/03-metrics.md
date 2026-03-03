@@ -24,9 +24,13 @@ See [API Reference](02-api.md) for endpoint details.
 | `watcher_failures_total` | counter | `service` | Critical failures — restart exceeded max retries or rollback failed |
 | `watcher_service_healthy` | gauge | `service` | `1` if the service is healthy, `0` if not |
 | `watcher_service_blocked` | gauge | `service` | `1` if the service digest is blocked, `0` if not |
+| `watcher_invalid_services_total` | gauge | — | Number of services that failed config validation and were skipped |
 | `watcher_poll_count_total` | counter | — | Total poll cycles executed across all services |
 | `watcher_last_poll_timestamp_seconds` | gauge | — | Unix timestamp of the most recent poll cycle |
 | `watcher_uptime_seconds` | gauge | — | Seconds elapsed since dockward started |
+| `docker_daemon_healthy` | gauge | — | `1` if Docker daemon is healthy, `0` if not |
+| `docker_daemon_consecutive_failures` | gauge | — | Consecutive Docker daemon health check failures |
+| `docker_daemon_checks_total` | counter | — | Total Docker daemon health checks performed |
 
 ## Example Output
 
@@ -66,6 +70,22 @@ watcher_last_poll_timestamp_seconds 1.740567321e+09
 # HELP watcher_uptime_seconds Seconds since start
 # TYPE watcher_uptime_seconds gauge
 watcher_uptime_seconds 14412
+
+# HELP watcher_invalid_services_total Number of services that failed config validation
+# TYPE watcher_invalid_services_total gauge
+watcher_invalid_services_total 0
+
+# HELP docker_daemon_healthy Whether Docker daemon is healthy (1) or not (0)
+# TYPE docker_daemon_healthy gauge
+docker_daemon_healthy 1
+
+# HELP docker_daemon_consecutive_failures Consecutive Docker daemon health check failures
+# TYPE docker_daemon_consecutive_failures gauge
+docker_daemon_consecutive_failures 0
+
+# HELP docker_daemon_checks_total Total Docker daemon health checks performed
+# TYPE docker_daemon_checks_total counter
+docker_daemon_checks_total 120
 ```
 
 ## Scrape Configuration

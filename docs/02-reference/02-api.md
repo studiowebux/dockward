@@ -205,10 +205,15 @@ Example response:
       "image_digest": "sha256:abc123...",
       "containers": [
         {
+          "id": "abc123def456",
           "name": "myapp_api_1",
           "state": "running",
           "status": "Up 2 hours (healthy)",
-          "image": "myapp:latest"
+          "image": "myapp:latest",
+          "cpu_percent": 1.2,
+          "memory_percent": 15.3,
+          "memory_usage_mb": 153.2,
+          "memory_limit_mb": 1000.0
         }
       ],
       "has_stats": true,
@@ -241,7 +246,10 @@ Example response:
 - `healthy` — omitted until the healer receives a Docker health event
 - `image`, `image_digest` — omitted until first successful deploy or poll cycle
 - `containers` — omitted for services with no `compose_project` or `silent: true`
-- `has_stats` — `false` until the first monitor poll cycle
+  - `containers[].id` — Docker container ID (full, not short)
+  - `containers[].cpu_percent`, `memory_percent`, `memory_usage_mb`, `memory_limit_mb` — per-container stats, omitted if monitor hasn't polled yet
+- `has_stats` — `false` until the first monitor poll cycle (service-level aggregated stats)
+- `cpu_percent`, `memory_percent`, `memory_usage_mb`, `memory_limit_mb` — service-level aggregated stats across all containers
 - `last_poll` — omitted until the first poll cycle completes
 
 ---

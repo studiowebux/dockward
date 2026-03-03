@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.10] - 2026-03-03
+
+### Added
+- Per-container CPU and memory stats - `ContainerInfo` now includes individual resource usage for each container
+- Prometheus metric `watcher_invalid_services_total` - tracks count of services that failed config validation
+- Container ID field added to `ContainerInfo` struct for resource stats lookup
+
+### Fixed
+- **CRITICAL:** Web UI template error - added missing `Now` field to `uiData` struct (template was completely broken)
+- CPU/memory stats now displayed per-container instead of aggregated at service level
+- Monitor now stores per-container resource usage keyed by container ID
+
+### Changed
+- Resource stats collection enhanced to track individual container metrics
+- API enriches container list with CPU/memory stats from monitor
+
 ## [1.0.0-alpha.9] - 2026-03-03
 
 ### Fixed
