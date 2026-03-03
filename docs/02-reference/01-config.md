@@ -52,13 +52,19 @@ Controls the registry polling behaviour used by full-mode services.
 |-------|------|---------|-------------|
 | `url` | string | `"http://localhost:5000"` | Base URL of the local Docker registry |
 | `poll_interval` | integer | `300` | Seconds between registry poll cycles (image digest comparison) |
+| `insecure` | boolean | `false` | Skip TLS verification when connecting to registry (for self-signed certificates) |
 
 ```json
 "registry": {
   "url": "http://localhost:5000",
-  "poll_interval": 300
+  "poll_interval": 300,
+  "insecure": false
 }
 ```
+
+:::warning
+Only set `insecure: true` for private registries with self-signed certificates. Never use with public registries.
+:::
 
 ## `monitor`
 
@@ -73,6 +79,28 @@ Controls container resource stat collection (CPU, memory). Independent of regist
   "stats_interval": 30
 }
 ```
+
+## `docker_health`
+
+Controls Docker daemon health checking. Dockward continuously monitors Docker connectivity to detect when the daemon is unavailable.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `check_interval` | integer | `30` | Seconds between Docker daemon health checks (min: 5, max: 3600) |
+| `timeout` | integer | `5` | Timeout for each health check request in seconds (min: 1, max: 30, must be less than `check_interval`) |
+
+```json
+"docker_health": {
+  "check_interval": 30,
+  "timeout": 5
+}
+```
+
+Health status is exposed via:
+- `/health` endpoint (returns 503 when Docker is unavailable)
+- Prometheus metrics: `docker_daemon_healthy`, `docker_daemon_consecutive_failures`, `docker_daemon_checks_total`
+
+See [Docker Daemon Health Checks](./08-health-checks.md) for details.
 
 ## `api`
 
@@ -224,12 +252,18 @@ Service validation rules:
   "runtime": "docker",
   "registry": {
     "url": "http://localhost:5000",
-    "poll_interval": 300
+    "poll_interval": 300,
+    "insecure": false
   },
   "monitor": {
     "stats_interval": 30
   },
+  "docker_health": {
+    "check_interval": 30,
+    "timeout": 5
+  },
   "api": {
+    "address": "127.0.0.1",
     "port": "9090"
   },
   "audit": {
