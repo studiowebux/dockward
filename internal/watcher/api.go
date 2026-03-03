@@ -791,47 +791,35 @@ const dataStarHTML = `<!DOCTYPE html>
   <title>Dockward - data-star UI</title>
 
   <!-- data-star.dev -->
-  <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js"></script>
-  <script type="module">
-    // Initialize data-star with SSE plugin
-    datastar({
-      plugins: [
-        // SSE plugin for real-time updates
-        {
-          name: 'sse',
-          onload: (ctx) => {
-            // Connect to SSE endpoint
-            const eventSource = new EventSource('/ui/stream')
+  <script src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js"></script>
+  <script>
+    // Wait for data-star to load, then initialize with SSE
+    window.addEventListener('load', function() {
+      // Connect to SSE endpoint for real-time updates
+      const eventSource = new EventSource('/ui/stream')
 
-            // Handle status updates
-            eventSource.addEventListener('status', (e) => {
-              const data = JSON.parse(e.data)
-              ctx.store.services = data.services
-              ctx.store.uptime = data.uptime
-              ctx.store.lastUpdate = new Date().toISOString()
-            })
+      // Handle status updates
+      eventSource.addEventListener('status', (e) => {
+        const data = JSON.parse(e.data)
+        console.log('Status update:', data)
+        // TODO: Update UI with data-star reactive state
+      })
 
-            // Handle audit events
-            eventSource.addEventListener('audit', (e) => {
-              const event = JSON.parse(e.data)
-              // Prepend to events array (keep last 50)
-              ctx.store.events = [event, ...ctx.store.events].slice(0, 50)
-            })
+      // Handle audit events
+      eventSource.addEventListener('audit', (e) => {
+        const event = JSON.parse(e.data)
+        console.log('Audit event:', event)
+        // TODO: Update events list with data-star
+      })
 
-            // Handle connection errors
-            eventSource.onerror = () => {
-              ctx.store.connectionStatus = 'error'
-              setTimeout(() => {
-                ctx.store.connectionStatus = 'reconnecting'
-              }, 5000)
-            }
+      // Handle connection errors
+      eventSource.onerror = () => {
+        console.error('SSE connection error')
+      }
 
-            eventSource.onopen = () => {
-              ctx.store.connectionStatus = 'connected'
-            }
-          }
-        }
-      ]
+      eventSource.onopen = () => {
+        console.log('SSE connected')
+      }
     })
   </script>
 
