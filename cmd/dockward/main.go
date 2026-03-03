@@ -85,7 +85,7 @@ func main() {
 
 	// Create clients.
 	dc := docker.NewClient()
-	rc := registry.NewClient(cfg.Registry.URL)
+	rc := registry.NewClient(cfg.Registry.URL, cfg.Registry.Insecure)
 
 	// Create audit logger (no-op when path is empty).
 	auditLog, err := audit.New(cfg.Audit.Path)
@@ -114,7 +114,7 @@ func main() {
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
 	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
-	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, cfg.API.Port)
+	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, cfg.API.Address, cfg.API.Port)
 
 	// Context with signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())

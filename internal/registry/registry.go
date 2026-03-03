@@ -4,6 +4,7 @@ package registry
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
@@ -17,11 +18,18 @@ type Client struct {
 }
 
 // NewClient creates a registry client for the given base URL (e.g., http://localhost:5000).
-func NewClient(baseURL string) *Client {
+func NewClient(baseURL string, insecure bool) *Client {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: insecure,
+		},
+	}
+
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		http: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: transport,
 		},
 	}
 }

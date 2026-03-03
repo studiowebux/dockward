@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/studiowebux/dockward/internal/audit"
+	"github.com/studiowebux/dockward/internal/compose"
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/hub"
 )
@@ -44,8 +45,8 @@ func (b *broadcaster) Broadcast(e audit.Entry) {
 	b.hub.Broadcast(data)
 }
 
-// NewAPI creates the trigger/metrics API on the given port.
-func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, port string) *API {
+// NewAPI creates the trigger/metrics API on the given address and port.
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, address string, port string) *API {
 	h := hub.NewHub()
 	al.WithBroadcast(&broadcaster{hub: h})
 
@@ -58,7 +59,7 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 		audit:   al,
 		hub:     h,
 		server: &http.Server{
-			Addr:         "127.0.0.1:" + port,
+			Addr:         address + ":" + port,
 			Handler:      mux,
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 30 * time.Second,
@@ -79,6 +80,8 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 	mux.HandleFunc("/ui", api.handleUI)
 	mux.HandleFunc("/ui/events", api.handleUIEvents)
 	mux.HandleFunc("/unblock/", api.handleUnblockPost)
+	mux.HandleFunc("/redeploy/", api.handleForceRedeploy)
+	mux.HandleFunc("/command-preview/", api.handleCommandPreview)
 
 	return api
 }
@@ -151,7 +154,8 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 			go func() {
 				ctx := context.Background()
 				if err := a.updater.checkAndUpdate(ctx, svc); err != nil {
-					a.updater.handlePollError(ctx, svc, err)
+					// Use non-suppressing error handler for manual triggers
+					a.updater.handlePollErrorAlways(ctx, svc, err)
 				}
 			}()
 			break
@@ -246,6 +250,10 @@ type serviceStatus struct {
 	MemoryPercent float64 `json:"memory_percent,omitempty"`
 	MemoryUsageMB float64 `json:"memory_usage_mb,omitempty"`
 	MemoryLimitMB float64 `json:"memory_limit_mb,omitempty"`
+	// Check timing information
+	LastCheck   *time.Time `json:"last_check,omitempty"`
+	NextCheck   *time.Time `json:"next_check,omitempty"`
+	CheckStatus string     `json:"check_status,omitempty"` // idle | checking | deploying
 }
 
 // GET /status - aggregated state for all configured services
@@ -394,6 +402,15 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 		}
 	}
 	s.Containers = snap.containers[svc.Name]
+
+	// Add check timing information
+	if lastCheck := a.updater.GetLastCheck(svc.Name); !lastCheck.IsZero() {
+		s.LastCheck = &lastCheck
+	}
+	nextCheck := a.updater.GetNextCheck(svc.Name)
+	s.NextCheck = &nextCheck
+	s.CheckStatus = a.updater.GetCheckStatus(svc.Name)
+
 	s.Status = synthesizeStatus(s)
 	return s
 }
@@ -827,3 +844,108 @@ setInterval(refreshStatus,15000);
 </script>
 </body>
 </html>`
+
+// POST /redeploy/<service> - force redeploy without image check
+func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serviceName := strings.TrimPrefix(r.URL.Path, "/redeploy/")
+	if serviceName == "" {
+		http.Error(w, "service name required", http.StatusBadRequest)
+		return
+	}
+
+	var svc *config.Service
+	for i := range a.updater.cfg.Services {
+		if a.updater.cfg.Services[i].Name == serviceName {
+			svc = &a.updater.cfg.Services[i]
+			break
+		}
+	}
+
+	if svc == nil {
+		http.Error(w, "service not found", http.StatusNotFound)
+		return
+	}
+
+	if len(svc.ComposeFiles) == 0 {
+		writeJSON(w, map[string]string{"status": "error", "message": "no compose files configured"})
+		return
+	}
+
+	log.Printf("[api] force redeploy: %s", svc.Name)
+	go func() {
+		ctx := context.Background()
+		if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+			log.Printf("[api] ERROR: force redeploy failed for %s: %v", svc.Name, err)
+			if werr := a.audit.Write(audit.Entry{
+				Service: svc.Name,
+				Event:   "force_redeploy_failed",
+				Message: fmt.Sprintf("Force redeploy failed: %v", err),
+				Level:   "error",
+			}); werr != nil {
+				log.Printf("[api] ERROR: audit write error: %v", werr)
+			}
+			return
+		}
+
+		if werr := a.audit.Write(audit.Entry{
+			Service: svc.Name,
+			Event:   "force_redeploy",
+			Message: "Forced redeploy via API",
+			Level:   "info",
+		}); werr != nil {
+			log.Printf("[api] ERROR: audit write error: %v", werr)
+		}
+	}()
+
+	writeJSON(w, map[string]string{"status": "redeploying", "service": serviceName})
+}
+
+// GET /command-preview/<service> - show docker compose command that would be executed
+func (a *API) handleCommandPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serviceName := strings.TrimPrefix(r.URL.Path, "/command-preview/")
+	if serviceName == "" {
+		http.Error(w, "service name required", http.StatusBadRequest)
+		return
+	}
+
+	var svc *config.Service
+	for i := range a.updater.cfg.Services {
+		if a.updater.cfg.Services[i].Name == serviceName {
+			svc = &a.updater.cfg.Services[i]
+			break
+		}
+	}
+
+	if svc == nil {
+		http.Error(w, "service not found", http.StatusNotFound)
+		return
+	}
+
+	// Build the docker compose command
+	cmd := "docker compose"
+	for _, f := range svc.ComposeFiles {
+		cmd += fmt.Sprintf(" -f %s", f)
+	}
+	if svc.ComposeProject != "" {
+		cmd += fmt.Sprintf(" -p %s", svc.ComposeProject)
+	}
+	if svc.EnvFile != "" {
+		cmd += fmt.Sprintf(" --env-file %s", svc.EnvFile)
+	}
+	cmd += " up -d"
+
+	writeJSON(w, map[string]string{
+		"service": serviceName,
+		"command": cmd,
+	})
+}

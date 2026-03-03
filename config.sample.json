@@ -1,9 +1,11 @@
 {
   "registry": {
     "url": "http://localhost:5000",
-    "poll_interval": 300
+    "poll_interval": 300,
+    "insecure": false
   },
   "api": {
+    "address": "127.0.0.1",
     "port": "9090"
   },
   "monitor": {

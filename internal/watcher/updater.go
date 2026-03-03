@@ -70,6 +70,14 @@ type Updater struct {
 	// Updated after each successful deploy and on each poll when image is up to date.
 	deployed   map[string]DeployedInfo
 	deployedMu sync.RWMutex
+
+	// lastChecked maps service name -> time of last check
+	lastChecked   map[string]time.Time
+	lastCheckedMu sync.RWMutex
+
+	// checkStatus maps service name -> current check status
+	checkStatus   map[string]string
+	checkStatusMu sync.RWMutex
 }
 
 // NewUpdater creates an image updater.
@@ -88,6 +96,8 @@ func NewUpdater(cfg *config.Config, dc *docker.Client, rc *registry.Client, disp
 		startAttempted: make(map[string]string),
 		composeHashes:  make(map[string]string),
 		deployed:       make(map[string]DeployedInfo),
+		lastChecked:    make(map[string]time.Time),
+		checkStatus:    make(map[string]string),
 	}
 }
 
@@ -240,12 +250,36 @@ func (u *Updater) handlePollError(ctx context.Context, svc config.Service, err e
 	u.errored[svc.Name] = msg
 	u.erroredMu.Unlock()
 
-	log.Printf("[updater] %s: %v", svc.Name, err)
+	log.Printf("[updater] ERROR: %s: %v", svc.Name, err)
 	u.metrics.IncFailures(svc.Name)
 	u.dispatcher.Send(ctx, notify.Alert{
 		Service: svc.Name,
 		Event:   "error",
 		Message: fmt.Sprintf("Poll error: %s", msg),
+		Level:   notify.LevelCritical,
+	})
+}
+
+// handlePollErrorAlways logs error without suppression. Used for manual triggers.
+func (u *Updater) handlePollErrorAlways(ctx context.Context, svc config.Service, err error) {
+	msg := err.Error()
+	log.Printf("[updater] ERROR: %s: %v", svc.Name, err)
+	u.metrics.IncFailures(svc.Name)
+
+	// Write to audit log
+	if werr := u.audit.Write(audit.Entry{
+		Service: svc.Name,
+		Event:   "trigger_failed",
+		Message: fmt.Sprintf("Manual trigger failed: %v", err),
+		Level:   "error",
+	}); werr != nil {
+		log.Printf("[updater] ERROR: %s: audit write error: %v", svc.Name, werr)
+	}
+
+	u.dispatcher.Send(ctx, notify.Alert{
+		Service: svc.Name,
+		Event:   "error",
+		Message: fmt.Sprintf("Manual trigger error: %s", msg),
 		Level:   notify.LevelCritical,
 	})
 }
@@ -267,7 +301,59 @@ func (u *Updater) clearPollError(svc config.Service) {
 	log.Printf("[updater] %s: recovered from previous error", svc.Name)
 }
 
+// GetNextCheck returns the next scheduled check time for a service
+func (u *Updater) GetNextCheck(serviceName string) time.Time {
+	u.lastCheckedMu.RLock()
+	lastCheck, exists := u.lastChecked[serviceName]
+	u.lastCheckedMu.RUnlock()
+
+	if !exists {
+		return time.Now().Add(time.Duration(u.cfg.Registry.PollInterval) * time.Second)
+	}
+	return lastCheck.Add(time.Duration(u.cfg.Registry.PollInterval) * time.Second)
+}
+
+// GetLastCheck returns the last check time for a service
+func (u *Updater) GetLastCheck(serviceName string) time.Time {
+	u.lastCheckedMu.RLock()
+	defer u.lastCheckedMu.RUnlock()
+	return u.lastChecked[serviceName]
+}
+
+// GetCheckStatus returns the current check status for a service
+func (u *Updater) GetCheckStatus(serviceName string) string {
+	u.checkStatusMu.RLock()
+	defer u.checkStatusMu.RUnlock()
+
+	status := u.checkStatus[serviceName]
+	if status == "" {
+		return "idle"
+	}
+	return status
+}
+
+// setCheckStatus updates the check status for a service
+func (u *Updater) setCheckStatus(serviceName string, status string) {
+	u.checkStatusMu.Lock()
+	u.checkStatus[serviceName] = status
+	u.checkStatusMu.Unlock()
+}
+
+// updateLastChecked updates the last check time for a service
+func (u *Updater) updateLastChecked(serviceName string) {
+	u.lastCheckedMu.Lock()
+	u.lastChecked[serviceName] = time.Now()
+	u.lastCheckedMu.Unlock()
+}
+
 func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error {
+	// Update check tracking
+	u.setCheckStatus(svc.Name, "checking")
+	defer func() {
+		u.setCheckStatus(svc.Name, "idle")
+		u.updateLastChecked(svc.Name)
+	}()
+
 	var changed []imageChange
 	representativeDigest := "" // first matched image's digest, used for startAttempted guard
 

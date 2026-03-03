@@ -33,13 +33,15 @@ type Audit struct {
 
 // API defines the trigger/metrics HTTP server.
 type API struct {
-	Port string `json:"port"` // default: 9090
+	Port    string `json:"port"`    // default: 9090
+	Address string `json:"address"` // default: 127.0.0.1
 }
 
 // Registry defines the local Docker registry connection.
 type Registry struct {
 	URL          string `json:"url"`
 	PollInterval int    `json:"poll_interval"` // seconds
+	Insecure     bool   `json:"insecure"`      // skip TLS verification for self-signed certs
 }
 
 // Monitor controls resource stat collection (CPU, memory).
@@ -142,6 +144,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.API.Port == "" {
 		c.API.Port = "9090"
+	}
+	if c.API.Address == "" {
+		c.API.Address = "127.0.0.1"
 	}
 	for i := range c.Services {
 		if c.Services[i].HealthGrace <= 0 {
