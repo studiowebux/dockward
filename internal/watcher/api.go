@@ -721,6 +721,7 @@ func writeJSON(w http.ResponseWriter, data any) {
 type uiData struct {
 	Hostname string
 	Uptime   string
+	Now      time.Time
 	Services []serviceStatus
 	Events   []audit.Entry
 }
@@ -770,6 +771,7 @@ func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {
 	data := uiData{
 		Hostname: hostname,
 		Uptime:   formatUptime(meta.UptimeSeconds),
+		Now:      time.Now(),
 		Services: services,
 		Events:   events,
 	}
