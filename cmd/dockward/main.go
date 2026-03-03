@@ -133,11 +133,12 @@ func main() {
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
 	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
 
-	// Collect config warnings for health endpoint
+	// Collect config warnings for health endpoint and set metric
 	configWarnings := make([]string, 0, len(cfg.InvalidServices))
 	for _, inv := range cfg.InvalidServices {
 		configWarnings = append(configWarnings, fmt.Sprintf("service[%d] %q: %s", inv.Index, inv.Name, inv.Reason))
 	}
+	metrics.SetInvalidServicesCount(len(cfg.InvalidServices))
 
 	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, dockerHealth, configWarnings, cfg.API.Address, cfg.API.Port)
 

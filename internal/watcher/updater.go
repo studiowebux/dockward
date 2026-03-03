@@ -979,6 +979,7 @@ func (u *Updater) serviceContainerInfos(ctx context.Context, project string) []C
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
 		result = append(result, ContainerInfo{
+			ID:     c.ID,
 			Name:   name,
 			State:  c.State,
 			Status: c.Status,

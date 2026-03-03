@@ -22,6 +22,14 @@ type ServiceStats struct {
 	MemoryLimitMB float64
 }
 
+// ContainerStats holds per-container resource usage.
+type ContainerStats struct {
+	CPUPercent    float64
+	MemoryPercent float64
+	MemoryUsageMB float64
+	MemoryLimitMB float64
+}
+
 // Monitor polls container resource usage and fires alerts when thresholds are exceeded.
 // Pattern: background goroutine, interval = poll_interval, cooldown = heal_cooldown.
 type Monitor struct {
@@ -34,6 +42,10 @@ type Monitor struct {
 	latest   map[string]ServiceStats
 	latestMu sync.RWMutex
 
+	// containerStats holds per-container resource usage (key: containerID).
+	containerStats   map[string]ContainerStats
+	containerStatsMu sync.RWMutex
+
 	// alertedAt tracks the last alert time per "service:metric" key to prevent spam.
 	alertedAt   map[string]time.Time
 	alertedAtMu sync.Mutex
@@ -42,12 +54,13 @@ type Monitor struct {
 // NewMonitor creates a resource monitor.
 func NewMonitor(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatcher, al *audit.Logger) *Monitor {
 	return &Monitor{
-		cfg:        cfg,
-		docker:     dc,
-		dispatcher: dispatcher,
-		audit:      al,
-		latest:     make(map[string]ServiceStats),
-		alertedAt:  make(map[string]time.Time),
+		cfg:            cfg,
+		docker:         dc,
+		dispatcher:     dispatcher,
+		audit:          al,
+		latest:         make(map[string]ServiceStats),
+		containerStats: make(map[string]ContainerStats),
+		alertedAt:      make(map[string]time.Time),
 	}
 }
 
@@ -74,12 +87,23 @@ func (m *Monitor) Run(ctx context.Context) {
 }
 
 // StatsSnapshot returns a copy of the latest resource stats per service.
-// Used by the status API to populate cpu/mem fields.
+// StatsSnapshot returns service-level aggregated stats for the status API.
 func (m *Monitor) StatsSnapshot() map[string]ServiceStats {
 	m.latestMu.RLock()
 	defer m.latestMu.RUnlock()
 	result := make(map[string]ServiceStats, len(m.latest))
 	for k, v := range m.latest {
+		result[k] = v
+	}
+	return result
+}
+
+// ContainerStatsSnapshot returns per-container stats for the status API.
+func (m *Monitor) ContainerStatsSnapshot() map[string]ContainerStats {
+	m.containerStatsMu.RLock()
+	defer m.containerStatsMu.RUnlock()
+	result := make(map[string]ContainerStats, len(m.containerStats))
+	for k, v := range m.containerStats {
 		result[k] = v
 	}
 	return result
@@ -120,6 +144,20 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
 		totalMemUsage += raw.MemoryUsage
 		totalMemLimit += raw.MemoryLimit
 
+		// Store per-container stats for API
+		var containerMemPct float64
+		if raw.MemoryLimit > 0 {
+			containerMemPct = float64(raw.MemoryUsage) / float64(raw.MemoryLimit) * 100
+		}
+		m.containerStatsMu.Lock()
+		m.containerStats[id] = ContainerStats{
+			CPUPercent:    raw.CPUPercent,
+			MemoryPercent: containerMemPct,
+			MemoryUsageMB: float64(raw.MemoryUsage) / 1024 / 1024,
+			MemoryLimitMB: float64(raw.MemoryLimit) / 1024 / 1024,
+		}
+		m.containerStatsMu.Unlock()
+
 		// Per-container threshold alerts use container-scoped cooldown keys.
 		if svc.CPUThreshold > 0 && raw.CPUPercent > svc.CPUThreshold {
 			m.maybeAlert(ctx, svc, "cpu:"+id, cooldown,
@@ -128,11 +166,10 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
 		}
 
 		if svc.MemoryThreshold > 0 && raw.MemoryLimit > 0 {
-			memPct := float64(raw.MemoryUsage) / float64(raw.MemoryLimit) * 100
-			if memPct > svc.MemoryThreshold {
+			if containerMemPct > svc.MemoryThreshold {
 				m.maybeAlert(ctx, svc, "memory:"+id, cooldown,
 					fmt.Sprintf("Container %s memory %.1f%% (%.0f MB / %.0f MB) exceeds threshold %.1f%%",
-						id[:12], memPct, float64(raw.MemoryUsage)/1024/1024, float64(raw.MemoryLimit)/1024/1024, svc.MemoryThreshold),
+						id[:12], containerMemPct, float64(raw.MemoryUsage)/1024/1024, float64(raw.MemoryLimit)/1024/1024, svc.MemoryThreshold),
 				)
 			}
 		}

@@ -28,6 +28,9 @@ type Metrics struct {
 	dockerHealthy          bool
 	dockerConsecutiveFails int
 	dockerCheckCount       int64
+
+	// Config validation
+	invalidServicesCount int
 }
 
 // NewMetrics creates an initialized metrics collector.
@@ -118,6 +121,13 @@ func (m *Metrics) SetDockerHealth(healthy bool, consecutiveFails int) {
 	m.dockerHealthy = healthy
 	m.dockerConsecutiveFails = consecutiveFails
 	m.dockerCheckCount++
+	m.mu.Unlock()
+}
+
+// SetInvalidServicesCount sets the count of services that failed config validation.
+func (m *Metrics) SetInvalidServicesCount(count int) {
+	m.mu.Lock()
+	m.invalidServicesCount = count
 	m.mu.Unlock()
 }
 
@@ -268,6 +278,11 @@ func (m *Metrics) Prometheus() string {
 	b.WriteString("# HELP docker_daemon_checks_total Total Docker daemon health checks performed\n")
 	b.WriteString("# TYPE docker_daemon_checks_total counter\n")
 	fmt.Fprintf(&b, "docker_daemon_checks_total %d\n", m.dockerCheckCount)
+
+	// Config validation metrics
+	b.WriteString("# HELP watcher_invalid_services_total Number of services that failed config validation\n")
+	b.WriteString("# TYPE watcher_invalid_services_total gauge\n")
+	fmt.Fprintf(&b, "watcher_invalid_services_total %d\n", m.invalidServicesCount)
 
 	return b.String()
 }

@@ -298,10 +298,15 @@ type statusResponse struct {
 
 // ContainerInfo holds the live state of a single container for UI display.
 type ContainerInfo struct {
-	Name   string `json:"name"`
-	State  string `json:"state"`
-	Status string `json:"status"`
-	Image  string `json:"image"`
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	State         string  `json:"state"`
+	Status        string  `json:"status"`
+	Image         string  `json:"image"`
+	CPUPercent    float64 `json:"cpu_percent,omitempty"`
+	MemoryPercent float64 `json:"memory_percent,omitempty"`
+	MemoryUsageMB float64 `json:"memory_usage_mb,omitempty"`
+	MemoryLimitMB float64 `json:"memory_limit_mb,omitempty"`
 }
 
 // serviceStatus is the per-service state returned by /status and /status/<name>.
@@ -398,17 +403,18 @@ func (a *API) handleStatusService(w http.ResponseWriter, r *http.Request) {
 
 // stateSnap holds a point-in-time snapshot of all state maps.
 type stateSnap struct {
-	blocked       map[string]string
-	notFound      map[string]string
-	errored       map[string]string
-	degraded      map[string]bool
-	exhausted     map[string]bool
-	restartCounts map[string]int
-	healthGauges  map[string]bool
-	counters      map[string]ServiceCounters
-	stats         map[string]ServiceStats
-	deployed      map[string]DeployedInfo
-	containers    map[string][]ContainerInfo
+	blocked        map[string]string
+	notFound       map[string]string
+	errored        map[string]string
+	degraded       map[string]bool
+	exhausted      map[string]bool
+	restartCounts  map[string]int
+	healthGauges   map[string]bool
+	counters       map[string]ServiceCounters
+	stats          map[string]ServiceStats
+	containerStats map[string]ContainerStats
+	deployed       map[string]DeployedInfo
+	containers     map[string][]ContainerInfo
 }
 
 func (a *API) stateSnapshot(ctx context.Context) stateSnap {
@@ -424,6 +430,7 @@ func (a *API) stateSnapshot(ctx context.Context) stateSnap {
 	}
 	if a.monitor != nil {
 		snap.stats = a.monitor.StatsSnapshot()
+		snap.containerStats = a.monitor.ContainerStatsSnapshot()
 	}
 	snap.deployed = a.updater.DeployedInfos()
 
@@ -433,6 +440,17 @@ func (a *API) stateSnapshot(ctx context.Context) stateSnap {
 			continue
 		}
 		if ci := a.updater.serviceContainerInfos(ctx, svc.ComposeProject); len(ci) > 0 {
+			// Enrich containers with stats from monitor
+			if snap.containerStats != nil {
+				for i := range ci {
+					if stats, ok := snap.containerStats[ci[i].ID]; ok {
+						ci[i].CPUPercent = stats.CPUPercent
+						ci[i].MemoryPercent = stats.MemoryPercent
+						ci[i].MemoryUsageMB = stats.MemoryUsageMB
+						ci[i].MemoryLimitMB = stats.MemoryLimitMB
+					}
+				}
+			}
 			containers[svc.Name] = ci
 		}
 	}
