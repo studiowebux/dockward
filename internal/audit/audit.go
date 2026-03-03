@@ -202,7 +202,6 @@ func (l *Logger) Write(e Entry) error {
 		return fmt.Errorf("marshal audit entry: %w", err)
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	// Check if rotation needed before write
 	if l.shouldRotate() {
@@ -215,13 +214,15 @@ func (l *Logger) Write(e Entry) error {
 	if err == nil {
 		l.eventCount++
 	}
-	p := l.push
-	b := l.bcast
-	l.mu.Unlock()
-
 	if err != nil {
+		l.mu.Unlock()
 		return err
 	}
+
+	// Capture push and broadcast handlers before unlocking
+	p := l.push
+	b := l.bcast
+	l.mu.Unlock() // Manual unlock before spawning goroutines
 
 	// Fire-and-forget push to warden.
 	if p != nil {
