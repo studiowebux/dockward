@@ -132,7 +132,14 @@ func main() {
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
 	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
-	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, dockerHealth, cfg.API.Address, cfg.API.Port)
+
+	// Collect config warnings for health endpoint
+	configWarnings := make([]string, 0, len(cfg.InvalidServices))
+	for _, inv := range cfg.InvalidServices {
+		configWarnings = append(configWarnings, fmt.Sprintf("service[%d] %q: %s", inv.Index, inv.Name, inv.Reason))
+	}
+
+	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, dockerHealth, configWarnings, cfg.API.Address, cfg.API.Port)
 
 	// Create shutdown coordinator and register managers
 	coordinator := shutdown.NewCoordinator()

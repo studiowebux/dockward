@@ -24,15 +24,16 @@ import (
 // API exposes HTTP endpoints for triggering updates, health, and metrics.
 // Listens on localhost only.
 type API struct {
-	updater      *Updater
-	healer       *Healer
-	metrics      *Metrics
-	monitor      *Monitor
-	audit        *audit.Logger
-	hub          *hub.Hub
-	dockerHealth *docker.HealthChecker
-	server       *http.Server
-	httpServer   *http.Server // For graceful shutdown
+	updater        *Updater
+	healer         *Healer
+	metrics        *Metrics
+	monitor        *Monitor
+	audit          *audit.Logger
+	hub            *hub.Hub
+	dockerHealth   *docker.HealthChecker
+	configWarnings []string // Invalid services from config validation
+	server         *http.Server
+	httpServer     *http.Server // For graceful shutdown
 }
 
 var (
@@ -96,19 +97,20 @@ func (b *broadcaster) Broadcast(e audit.Entry) {
 }
 
 // NewAPI creates the trigger/metrics API on the given address and port.
-func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, address string, port string) *API {
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, configWarnings []string, address string, port string) *API {
 	h := hub.NewHub()
 	al.WithBroadcast(&broadcaster{hub: h})
 
 	mux := http.NewServeMux()
 	api := &API{
-		updater:      updater,
-		healer:       healer,
-		metrics:      metrics,
-		monitor:      monitor,
-		audit:        al,
-		dockerHealth: dockerHealth,
-		hub:          h,
+		updater:        updater,
+		healer:         healer,
+		metrics:        metrics,
+		monitor:        monitor,
+		audit:          al,
+		dockerHealth:   dockerHealth,
+		configWarnings: configWarnings,
+		hub:            h,
 		server: &http.Server{
 			Addr:              address + ":" + port,
 			Handler:           mux,
@@ -567,11 +569,16 @@ func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
 				"healthy": true,
 			},
 			"docker": map[string]interface{}{
-				"healthy":            dockerStatus.Healthy,
-				"last_check":         dockerStatus.LastCheck.Format(time.RFC3339),
-				"consecutive_fails":  dockerStatus.ConsecutiveFails,
+				"healthy":           dockerStatus.Healthy,
+				"last_check":        dockerStatus.LastCheck.Format(time.RFC3339),
+				"consecutive_fails": dockerStatus.ConsecutiveFails,
 			},
 		},
+	}
+
+	// Add config warnings if any services were skipped during validation
+	if len(a.configWarnings) > 0 {
+		response["config_warnings"] = a.configWarnings
 	}
 
 	// Add optional fields only when available

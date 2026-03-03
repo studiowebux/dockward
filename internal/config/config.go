@@ -21,15 +21,24 @@ type Push struct {
 
 // Config is the top-level configuration.
 type Config struct {
-	Runtime       string        `json:"runtime"`        // Container runtime: "docker" or "podman", default: "docker"
-	Registry      Registry      `json:"registry"`
-	API           API           `json:"api"`
-	Audit         Audit         `json:"audit"`
-	Monitor       Monitor       `json:"monitor"`
-	DockerHealth  DockerHealth  `json:"docker_health"`
-	Notifications Notifications `json:"notifications"`
-	Push          Push          `json:"push"`
-	Services      []Service     `json:"services"`
+	Runtime         string        `json:"runtime"`        // Container runtime: "docker" or "podman", default: "docker"
+	Registry        Registry      `json:"registry"`
+	API             API           `json:"api"`
+	Audit           Audit         `json:"audit"`
+	Monitor         Monitor       `json:"monitor"`
+	DockerHealth    DockerHealth  `json:"docker_health"`
+	Notifications   Notifications `json:"notifications"`
+	Push            Push          `json:"push"`
+	Services        []Service     `json:"services"`
+	InvalidServices []ServiceValidationError `json:"-"` // Services that failed validation (not serialized)
+}
+
+// ServiceValidationError records why a service was skipped during validation.
+type ServiceValidationError struct {
+	Index   int
+	Name    string
+	Reason  string
+	Service Service
 }
 
 // Audit defines the audit log file. Empty path disables audit logging.
@@ -130,6 +139,14 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
+	// Log warnings for invalid services (non-fatal)
+	if len(cfg.InvalidServices) > 0 {
+		fmt.Fprintf(os.Stderr, "[config] WARNING: %d service(s) failed validation and will be skipped:\n", len(cfg.InvalidServices))
+		for _, inv := range cfg.InvalidServices {
+			fmt.Fprintf(os.Stderr, "  - service[%d] %q: %s\n", inv.Index, inv.Name, inv.Reason)
+		}
+	}
+
 	// Expand environment variables in webhook headers
 	for i := range cfg.Notifications.Webhooks {
 		for k, v := range cfg.Notifications.Webhooks[i].Headers {
@@ -183,7 +200,7 @@ func (c *Config) setDefaults() {
 }
 
 func (c *Config) validate() error {
-	// Validate runtime is either docker or podman
+	// Validate runtime is either docker or podman (FATAL - cannot proceed without valid runtime)
 	if c.Runtime != "docker" && c.Runtime != "podman" {
 		return fmt.Errorf("runtime must be 'docker' or 'podman', got %q", c.Runtime)
 	}
@@ -191,32 +208,56 @@ func (c *Config) validate() error {
 	// Compile regex for project name validation once
 	projectNameRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
+	// Collect valid services and track invalid ones (non-fatal)
+	validServices := make([]Service, 0, len(c.Services))
+	c.InvalidServices = []ServiceValidationError{}
+
 	for i, svc := range c.Services {
+		// Silent services skip validation entirely
 		if svc.Silent {
+			validServices = append(validServices, svc)
 			continue
 		}
+
+		// Helper to mark service as invalid
+		markInvalid := func(reason string) {
+			c.InvalidServices = append(c.InvalidServices, ServiceValidationError{
+				Index:   i,
+				Name:    svc.Name,
+				Reason:  reason,
+				Service: svc,
+			})
+		}
+
+		// Validate service-level requirements
 		if svc.Name == "" {
-			return fmt.Errorf("service[%d]: name is required", i)
+			markInvalid(fmt.Sprintf("service[%d]: name is required", i))
+			continue
 		}
 
 		// Validate compose project name for security
 		if svc.ComposeProject != "" {
 			if !projectNameRegex.MatchString(svc.ComposeProject) {
-				return fmt.Errorf("service[%d] %q: compose_project contains invalid characters: must match ^[a-zA-Z0-9_-]{1,64}$ (got %q)",
-					i, svc.Name, svc.ComposeProject)
+				markInvalid(fmt.Sprintf("compose_project contains invalid characters: must match ^[a-zA-Z0-9_-]{1,64}$ (got %q)", svc.ComposeProject))
+				continue
 			}
 		}
 
 		// Validate compose files with security checks
+		composeFilesValid := true
 		for j, cf := range svc.ComposeFiles {
 			// Must be absolute path
 			if !filepath.IsAbs(cf) {
-				return fmt.Errorf("service[%d] %q: compose_file[%d] must be absolute path: %q", i, svc.Name, j, cf)
+				markInvalid(fmt.Sprintf("compose_file[%d] must be absolute path: %q", j, cf))
+				composeFilesValid = false
+				break
 			}
 
-			// Check for path traversal attempts
+			// Check for path traversal attempts (SECURITY: always fatal)
 			if strings.Contains(cf, "..") {
-				return fmt.Errorf("service[%d] %q: compose_file[%d] contains path traversal attempt: %q", i, svc.Name, j, cf)
+				markInvalid(fmt.Sprintf("compose_file[%d] contains path traversal attempt: %q", j, cf))
+				composeFilesValid = false
+				break
 			}
 
 			// Clean the path
@@ -226,27 +267,36 @@ func (c *Config) validate() error {
 			info, err := os.Stat(cleanPath)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return fmt.Errorf("service[%d] %q: compose_file[%d] not found: %q", i, svc.Name, j, cleanPath)
+					markInvalid(fmt.Sprintf("compose_file[%d] not found: %q", j, cleanPath))
+				} else {
+					markInvalid(fmt.Sprintf("compose_file[%d] stat error: %q: %v", j, cleanPath, err))
 				}
-				return fmt.Errorf("service[%d] %q: compose_file[%d] stat error: %q: %w", i, svc.Name, j, cleanPath, err)
+				composeFilesValid = false
+				break
 			}
 
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("service[%d] %q: compose_file[%d] is not a regular file: %q (mode: %v)",
-					i, svc.Name, j, cleanPath, info.Mode())
+				markInvalid(fmt.Sprintf("compose_file[%d] is not a regular file: %q (mode: %v)", j, cleanPath, info.Mode()))
+				composeFilesValid = false
+				break
 			}
+		}
+		if !composeFilesValid {
+			continue
 		}
 
 		// Validate env file with security checks
 		if svc.EnvFile != "" {
 			// Must be absolute path
 			if !filepath.IsAbs(svc.EnvFile) {
-				return fmt.Errorf("service[%d] %q: env_file must be absolute path: %q", i, svc.Name, svc.EnvFile)
+				markInvalid(fmt.Sprintf("env_file must be absolute path: %q", svc.EnvFile))
+				continue
 			}
 
-			// Check for path traversal attempts
+			// Check for path traversal attempts (SECURITY: always fatal)
 			if strings.Contains(svc.EnvFile, "..") {
-				return fmt.Errorf("service[%d] %q: env_file contains path traversal attempt: %q", i, svc.Name, svc.EnvFile)
+				markInvalid(fmt.Sprintf("env_file contains path traversal attempt: %q", svc.EnvFile))
+				continue
 			}
 
 			// Clean the path
@@ -256,49 +306,69 @@ func (c *Config) validate() error {
 			info, err := os.Stat(cleanPath)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return fmt.Errorf("service[%d] %q: env_file not found: %q", i, svc.Name, cleanPath)
+					markInvalid(fmt.Sprintf("env_file not found: %q", cleanPath))
+				} else {
+					markInvalid(fmt.Sprintf("env_file stat error: %q: %v", cleanPath, err))
 				}
-				return fmt.Errorf("service[%d] %q: env_file stat error: %q: %w", i, svc.Name, cleanPath, err)
+				continue
 			}
 
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("service[%d] %q: env_file is not a regular file: %q (mode: %v)",
-					i, svc.Name, cleanPath, info.Mode())
+				markInvalid(fmt.Sprintf("env_file is not a regular file: %q (mode: %v)", cleanPath, info.Mode()))
+				continue
 			}
 		}
 
+		// Validate feature requirements
 		if svc.AutoUpdate {
 			if len(svc.Images) == 0 {
-				return fmt.Errorf("service[%d] %q: images is required when auto_update is true", i, svc.Name)
+				markInvalid("images is required when auto_update is true")
+				continue
 			}
 			if len(svc.ComposeFiles) == 0 {
-				return fmt.Errorf("service[%d] %q: compose_files is required when auto_update is true", i, svc.Name)
+				markInvalid("compose_files is required when auto_update is true")
+				continue
 			}
 			if svc.ComposeProject == "" {
-				return fmt.Errorf("service[%d] %q: compose_project is required when auto_update is true", i, svc.Name)
+				markInvalid("compose_project is required when auto_update is true")
+				continue
 			}
 		}
 		if svc.AutoHeal && svc.ComposeProject == "" && svc.ContainerName == "" {
-			return fmt.Errorf("service[%d] %q: compose_project or container_name is required when auto_heal is true", i, svc.Name)
+			markInvalid("compose_project or container_name is required when auto_heal is true")
+			continue
 		}
+
 		// Validate thresholds
 		if svc.CPUThreshold < 0 || svc.CPUThreshold > 100 {
-			return fmt.Errorf("service[%d] %q: cpu_threshold must be between 0-100, got %.0f", i, svc.Name, svc.CPUThreshold)
+			markInvalid(fmt.Sprintf("cpu_threshold must be between 0-100, got %.0f", svc.CPUThreshold))
+			continue
 		}
 		if svc.MemoryThreshold < 0 || svc.MemoryThreshold > 100 {
-			return fmt.Errorf("service[%d] %q: memory_threshold must be between 0-100, got %.0f", i, svc.Name, svc.MemoryThreshold)
+			markInvalid(fmt.Sprintf("memory_threshold must be between 0-100, got %.0f", svc.MemoryThreshold))
+			continue
 		}
+
 		// Validate timing values
 		if svc.HealthGrace < 0 {
-			return fmt.Errorf("service[%d] %q: health_grace cannot be negative", i, svc.Name)
+			markInvalid("health_grace cannot be negative")
+			continue
 		}
 		if svc.HealCooldown < 0 {
-			return fmt.Errorf("service[%d] %q: heal_cooldown cannot be negative", i, svc.Name)
+			markInvalid("heal_cooldown cannot be negative")
+			continue
 		}
 		if svc.HealMaxRestarts < 0 {
-			return fmt.Errorf("service[%d] %q: heal_max_restarts cannot be negative", i, svc.Name)
+			markInvalid("heal_max_restarts cannot be negative")
+			continue
 		}
+
+		// Service passed all validation checks
+		validServices = append(validServices, svc)
 	}
+
+	// Replace services list with only valid ones
+	c.Services = validServices
 
 	// Validate global settings
 	if c.Registry.PollInterval < 10 {

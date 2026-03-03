@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.9] - 2026-03-03
+
+### Fixed
+- **CRITICAL:** Config validation no longer kills entire process when one service has invalid config (missing compose file, etc.)
+- Invalid services are now logged as warnings and skipped, allowing valid services to continue monitoring
+- `/health` endpoint now exposes `config_warnings` array listing any services that failed validation
+
+### Changed
+- Config validation behavior: service-level errors (missing files, invalid paths) are non-fatal and collected in `InvalidServices`
+- Only global validation errors (invalid runtime) remain fatal
+- Startup logs now show clear warnings for each skipped service with reason
+
 ## [1.0.0-alpha.8] - 2026-03-03
 
 ### Added

@@ -88,12 +88,24 @@ func TestConfigValidation_ProjectName(t *testing.T) {
 			cfg.setDefaults()
 			err := cfg.validate()
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validate() with projectName=%q: error = %v, wantErr %v", tt.projectName, err, tt.wantErr)
-			}
-			if err != nil && tt.errContains != "" {
-				if !contains(err.Error(), tt.errContains) {
-					t.Errorf("validate() error = %q, want to contain %q", err.Error(), tt.errContains)
+			// After config validation refactor: invalid services are collected, not fatal errors
+			if tt.wantErr {
+				// Should have invalid services
+				if len(cfg.InvalidServices) == 0 {
+					t.Errorf("validate() with projectName=%q: expected invalid service, got none", tt.projectName)
+				}
+				if len(cfg.InvalidServices) > 0 && tt.errContains != "" {
+					if !contains(cfg.InvalidServices[0].Reason, tt.errContains) {
+						t.Errorf("validate() reason = %q, want to contain %q", cfg.InvalidServices[0].Reason, tt.errContains)
+					}
+				}
+			} else {
+				// Should have no errors and no invalid services
+				if err != nil {
+					t.Errorf("validate() with projectName=%q: unexpected error = %v", tt.projectName, err)
+				}
+				if len(cfg.InvalidServices) > 0 {
+					t.Errorf("validate() with projectName=%q: unexpected invalid services = %v", tt.projectName, cfg.InvalidServices)
 				}
 			}
 		})
@@ -154,12 +166,24 @@ func TestConfigValidation_ComposePaths(t *testing.T) {
 			cfg.setDefaults()
 			err := cfg.validate()
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validate() with composeFiles=%v: error = %v, wantErr %v", tt.composeFiles, err, tt.wantErr)
-			}
-			if err != nil && tt.errContains != "" {
-				if !contains(err.Error(), tt.errContains) {
-					t.Errorf("validate() error = %q, want to contain %q", err.Error(), tt.errContains)
+			// After config validation refactor: invalid services are collected, not fatal errors
+			if tt.wantErr {
+				// Should have invalid services
+				if len(cfg.InvalidServices) == 0 {
+					t.Errorf("validate() with composeFiles=%v: expected invalid service, got none", tt.composeFiles)
+				}
+				if len(cfg.InvalidServices) > 0 && tt.errContains != "" {
+					if !contains(cfg.InvalidServices[0].Reason, tt.errContains) {
+						t.Errorf("validate() reason = %q, want to contain %q", cfg.InvalidServices[0].Reason, tt.errContains)
+					}
+				}
+			} else {
+				// Should have no errors and no invalid services
+				if err != nil {
+					t.Errorf("validate() with composeFiles=%v: unexpected error = %v", tt.composeFiles, err)
+				}
+				if len(cfg.InvalidServices) > 0 {
+					t.Errorf("validate() with composeFiles=%v: unexpected invalid services = %v", tt.composeFiles, cfg.InvalidServices)
 				}
 			}
 		})
@@ -219,12 +243,24 @@ func TestConfigValidation_EnvFile(t *testing.T) {
 			cfg.setDefaults()
 			err := cfg.validate()
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validate() with envFile=%q: error = %v, wantErr %v", tt.envFile, err, tt.wantErr)
-			}
-			if err != nil && tt.errContains != "" {
-				if !contains(err.Error(), tt.errContains) {
-					t.Errorf("validate() error = %q, want to contain %q", err.Error(), tt.errContains)
+			// After config validation refactor: invalid services are collected, not fatal errors
+			if tt.wantErr {
+				// Should have invalid services
+				if len(cfg.InvalidServices) == 0 {
+					t.Errorf("validate() with envFile=%q: expected invalid service, got none", tt.envFile)
+				}
+				if len(cfg.InvalidServices) > 0 && tt.errContains != "" {
+					if !contains(cfg.InvalidServices[0].Reason, tt.errContains) {
+						t.Errorf("validate() reason = %q, want to contain %q", cfg.InvalidServices[0].Reason, tt.errContains)
+					}
+				}
+			} else {
+				// Should have no errors and no invalid services
+				if err != nil {
+					t.Errorf("validate() with envFile=%q: unexpected error = %v", tt.envFile, err)
+				}
+				if len(cfg.InvalidServices) > 0 {
+					t.Errorf("validate() with envFile=%q: unexpected invalid services = %v", tt.envFile, cfg.InvalidServices)
 				}
 			}
 		})
@@ -299,14 +335,32 @@ func TestConfigLoad_MaliciousConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err := Load(configFile)
+			cfg, err := Load(configFile)
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if err != nil && tt.errContains != "" {
-				if !contains(err.Error(), tt.errContains) {
-					t.Errorf("Load() error = %q, want to contain %q", err.Error(), tt.errContains)
+			// After config validation refactor: service-level issues are non-fatal
+			// Only runtime validation is still fatal
+			if tt.name == "invalid runtime" {
+				// Runtime validation is still fatal
+				if (err != nil) != tt.wantErr {
+					t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if err != nil && tt.errContains != "" {
+					if !contains(err.Error(), tt.errContains) {
+						t.Errorf("Load() error = %q, want to contain %q", err.Error(), tt.errContains)
+					}
+				}
+			} else {
+				// Service validation errors are now non-fatal
+				if err != nil {
+					t.Errorf("Load() unexpected error = %v", err)
+				}
+				if cfg != nil && len(cfg.InvalidServices) == 0 {
+					t.Errorf("Load() expected invalid services, got none")
+				}
+				if cfg != nil && len(cfg.InvalidServices) > 0 && tt.errContains != "" {
+					if !contains(cfg.InvalidServices[0].Reason, tt.errContains) {
+						t.Errorf("Load() invalid service reason = %q, want to contain %q", cfg.InvalidServices[0].Reason, tt.errContains)
+					}
 				}
 			}
 		})
