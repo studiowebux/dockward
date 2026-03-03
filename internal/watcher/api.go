@@ -889,16 +889,41 @@ function refreshStatus(){
         }
         nameCell+='\n<details data-svc="'+esc(s.name)+'" style="margin-top:3px"><summary style="cursor:pointer;color:var(--text-muted);font-size:11px">'+s.containers.length+' container(s)</summary><div class="ctrs">'+cdivs+'</div></details>';
       }
+      // Build config flags
+      var configFlags='';
+      configFlags+='<span style="color:'+(s.auto_update?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-update">U</span> ';
+      configFlags+='<span style="color:'+(s.auto_heal?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-heal">H</span> ';
+      configFlags+='<span style="color:'+(s.auto_start?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-start">S</span>';
+
+      // Build health indicator
+      var healthIcon='<span style="color:var(--text-dim)">?</span>';
+      if(s.healthy===true)healthIcon='<span style="color:var(--success)">✓</span>';
+      else if(s.healthy===false)healthIcon='<span style="color:var(--error)">✗</span>';
+
+      // Build status with error tooltip
+      var statusCell='<span class="'+esc(s.status)+'">'+esc(s.status)+'</span>';
+      if(s.errored)statusCell+=' <span title="'+esc(s.errored)+'" style="cursor:help">⚠️</span>';
+
+      // Build resources display
+      var resources='--';
+      if(s.has_stats){
+        resources='CPU: '+Math.round(s.cpu_percent)+'%<br/>';
+        resources+='MEM: '+Math.round(s.memory_usage_mb||0)+'MB/'+(s.memory_limit_mb?Math.round(s.memory_limit_mb)+'MB':'?')+' ('+Math.round(s.memory_percent)+'%)';
+      }
+
+      // Build deploy stats
+      var deployStats='U:'+s.updates_total+' R:'+s.rollbacks_total+'<br/>';
+      deployStats+='H:'+s.restarts_total+' F:'+s.failures_total;
+
       rows+='<tr>'+
         '<td>'+nameCell+'</td>'+
-        '<td class="'+esc(s.status)+'">'+esc(s.status)+'</td>'+
+        '<td>'+statusCell+'</td>'+
+        '<td style="font-size:11px">'+configFlags+'</td>'+
         '<td style="color:var(--text-muted);font-size:11px">'+nextCheckText+'</td>'+
-        '<td style="color:var(--text-muted)">'+(s.image?esc(s.image):'--')+'</td>'+
-        '<td style="color:var(--text-muted)">'+(s.image_digest?esc(s.image_digest):'--')+'</td>'+
-        '<td>'+esc(cpu)+'</td>'+
-        '<td>'+(s.updates_total||0)+'</td>'+
-        '<td>'+(s.rollbacks_total||0)+'</td>'+
-        '<td>'+(s.restarts_total||0)+'</td>'+
+        '<td style="font-size:11px">'+healthIcon+'</td>'+
+        '<td style="color:var(--text-muted);font-size:11px">'+(s.image?esc(s.image)+'<br/>':'')+(s.image_digest?'<span style="color:var(--text-dim)">'+esc(s.image_digest)+'</span>':'--')+'</td>'+
+        '<td style="font-size:11px">'+resources+'</td>'+
+        '<td style="font-size:11px">'+deployStats+'</td>'+
         '<td>'+actions+'</td>'+
         '</tr>';
     }
