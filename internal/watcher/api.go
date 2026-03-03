@@ -791,8 +791,8 @@ const dataStarHTML = `<!DOCTYPE html>
   <title>Dockward - data-star UI</title>
 
   <!-- data-star.dev -->
-  <script src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js"></script>
-  <script>
+  <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js"></script>
+  <script type="module">
     // Initialize SSE connection after page load
     window.addEventListener('load', function() {
       // Get the data-star store from the container element
@@ -1260,7 +1260,7 @@ const dataStarHTML = `<!DOCTYPE html>
   </div>
 
   <!-- Helper functions -->
-  <script>
+  <script type="module">
     // Format time until next check
     window.formatTimeUntil = function(timestamp) {
       if (!timestamp) return '--'
