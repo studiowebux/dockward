@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"html/template"
-	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +15,7 @@ import (
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/docker"
 	"github.com/studiowebux/dockward/internal/hub"
+	"github.com/studiowebux/dockward/internal/logger"
 	"github.com/studiowebux/dockward/internal/saferun"
 )
 
@@ -139,7 +137,6 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 	mux.HandleFunc("/metrics", withTimeout(api.handleMetrics, defaultTimeout))
 	mux.HandleFunc("/audit", withTimeout(api.handleAudit, defaultTimeout))
 	mux.HandleFunc("/ui", withTimeout(api.handleUI, defaultTimeout))
-	mux.HandleFunc("/ui/v2", withTimeout(api.handleUIDataStar, defaultTimeout))
 	mux.HandleFunc("/command-preview/", withTimeout(api.handleCommandPreview, defaultTimeout))
 
 	// SSE endpoints - no timeout (long-lived connections)
@@ -735,30 +732,7 @@ func writeJSON(w http.ResponseWriter, data any) {
 	}
 }
 
-// uiData is the template context for GET /ui.
-type uiData struct {
-	Hostname string
-	Uptime   string
-	Now      time.Time
-	Services []serviceStatus
-	Events   []audit.Entry
-}
 
-// uiTemplate is compiled once at startup.
-var uiTemplate = template.Must(template.New("ui").Funcs(template.FuncMap{
-	"formatDuration": func(d time.Duration) string {
-		if d < 0 {
-			return "now"
-		}
-		if d < time.Minute {
-			return fmt.Sprintf("%ds", int(d.Seconds()))
-		}
-		if d < time.Hour {
-			return fmt.Sprintf("%dm", int(d.Minutes()))
-		}
-		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-	},
-}).Parse(uiHTML))
 
 // GET /ui - web dashboard
 func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {
@@ -767,36 +741,10 @@ func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snap := a.stateSnapshot(r.Context())
-	meta := a.metrics.Meta()
-
-	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
-	for _, svc := range a.updater.cfg.Services {
-		services = append(services, a.buildServiceStatus(svc, snap))
-	}
-
-	events, err := a.audit.Recent(20)
-	if err != nil {
-		logger.Printf("[api] ui: audit read error: %v", err)
-	}
-	// Reverse so newest event appears first.
-	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-		events[i], events[j] = events[j], events[i]
-	}
-
-	hostname, _ := os.Hostname()
-
-	data := uiData{
-		Hostname: hostname,
-		Uptime:   formatUptime(meta.UptimeSeconds),
-		Now:      time.Now(),
-		Services: services,
-		Events:   events,
-	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := uiTemplate.Execute(w, data); err != nil {
-		logger.Printf("[api] ui: template error: %v", err)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(dataStarHTML)); err != nil {
+		logger.Printf("[api] ERROR: failed to write UI: %v", err)
 	}
 }
 
@@ -834,368 +782,6 @@ func formatUptime(seconds int64) string {
 	}
 }
 
-const uiHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Dockward</title>
-<script>
-(function(){
-  var t=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');
-  if(t==='light')document.documentElement.setAttribute('data-theme','light');
-})();
-</script>
-<style>
-:root{
-  --bg:#0f0f0f;--surface:#161616;--border:#2a2a2a;
-  --text:#d0d0d0;--text-muted:#888;--text-label:#999;--text-dim:#666;
-  --ok:#4caf50;--warn:#ffa726;--err:#ef5350;--info:#42a5f5;--unknown:#888;
-  --btn-bg:#1c1c1c;--btn-border:#333;--btn-text:#999;
-  --btn-hover-bg:#252525;--btn-hover-text:#ccc;
-  --row-hover:#131313;
-}
-[data-theme="light"]{
-  --bg:#f4f4f4;--surface:#fff;--border:#e0e0e0;
-  --text:#1a1a1a;--text-muted:#555;--text-label:#444;--text-dim:#888;
-  --ok:#2e7d32;--warn:#e65100;--err:#c62828;--info:#1565c0;--unknown:#777;
-  --btn-bg:#fff;--btn-border:#ccc;--btn-text:#555;
-  --btn-hover-bg:#f0f0f0;--btn-hover-text:#111;
-  --row-hover:#fafafa;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:monospace;font-size:13px;background:var(--bg);color:var(--text);padding:24px 32px}
-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;color:var(--text-muted);font-size:12px}
-h2{font-size:11px;font-weight:normal;color:var(--text-label);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
-table{width:100%;border-collapse:collapse;margin-bottom:32px}
-th{text-align:left;color:var(--text-label);font-weight:normal;padding:5px 12px;border-bottom:1px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
-td{padding:6px 12px;border-bottom:1px solid var(--border);vertical-align:middle;color:var(--text)}
-tr:hover td{background:var(--row-hover)}
-.ok{color:var(--ok)}.unhealthy{color:var(--err)}.deploying{color:var(--info)}
-.degraded{color:var(--warn)}.exhausted{color:var(--err)}.blocked{color:var(--warn)}
-.not_found{color:var(--text-muted)}.errored{color:var(--err)}.unknown{color:var(--unknown)}
-.info{color:var(--info)}.warning{color:var(--warn)}.error{color:var(--err)}.critical{color:var(--err)}
-button{background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--btn-border);padding:3px 10px;cursor:pointer;font-family:monospace;font-size:11px}
-button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
-#theme-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;font-family:monospace;font-size:11px;padding:0}
-#theme-toggle:hover{color:var(--text)}
-.ctrs{margin-top:4px}
-.ctr{display:flex;gap:8px;font-size:11px;color:var(--text-muted);padding:1px 0}
-.ctr-name{min-width:120px}.ctr-state{min-width:60px}
-</style>
-</head>
-<body>
-<header>
-  <span>Dockward &mdash; {{.Hostname}} &mdash; uptime {{.Uptime}}</span>
-  <button id="theme-toggle" onclick="toggleTheme()">[light]</button>
-</header>
-
-<h2>Services</h2>
-<table>
-<thead><tr><th>Name</th><th>Status</th><th>Config</th><th>Next Check</th><th>Health</th><th>Image</th><th>Resources</th><th>Deploy Stats</th><th>Actions</th></tr></thead>
-<tbody id="status-body">
-{{range .Services}}
-<tr>
-  <td>
-    {{.Name}}
-    {{if .Containers}}
-    <details data-svc="{{.Name}}" style="margin-top:3px">
-      <summary style="cursor:pointer;color:var(--text-muted);font-size:11px">{{len .Containers}} container(s)</summary>
-      <div class="ctrs">
-        {{range .Containers}}
-        <div class="ctr"><span class="ctr-name">{{.Name}}</span><span class="ctr-state">{{.State}}</span><span>{{.Status}}</span></div>
-        {{end}}
-      </div>
-    </details>
-    {{end}}
-  </td>
-  <td class="{{.Status}}">
-    {{.Status}}
-    {{if .Errored}}<span title="{{.Errored}}" style="cursor:help"> ⚠️</span>{{end}}
-  </td>
-  <td style="font-size:11px">
-    {{if .AutoUpdate}}<span style="color:var(--success)" title="Auto-update enabled">U</span>{{else}}<span style="color:var(--text-dim)">-</span>{{end}}
-    {{if .AutoHeal}}<span style="color:var(--success)" title="Auto-heal enabled">H</span>{{else}}<span style="color:var(--text-dim)">-</span>{{end}}
-    {{if .AutoStart}}<span style="color:var(--success)" title="Auto-start enabled">S</span>{{else}}<span style="color:var(--text-dim)">-</span>{{end}}
-  </td>
-  <td style="color:var(--text-muted);font-size:11px">
-    {{if .NextCheck}}
-      <span title="Next check at {{.NextCheck.Format "15:04:05"}}">{{.NextCheck.Sub $.Now | formatDuration}}</span>
-    {{else}}--{{end}}
-    {{if eq .CheckStatus "checking"}}
-      <span style="color:var(--warning)"> ⏳</span>
-    {{end}}
-  </td>
-  <td style="font-size:11px">
-    {{if eq .Healthy true}}<span style="color:var(--success)">✓</span>
-    {{else if eq .Healthy false}}<span style="color:var(--error)">✗</span>
-    {{else}}<span style="color:var(--text-dim)">?</span>{{end}}
-  </td>
-  <td style="color:var(--text-muted);font-size:11px">
-    {{if .Image}}{{.Image}}<br/>{{end}}
-    {{if .ImageDigest}}<span style="color:var(--text-dim)">{{.ImageDigest}}</span>{{else}}--{{end}}
-  </td>
-  <td style="font-size:11px">
-    {{if .HasStats}}
-      CPU: {{printf "%.0f" .CPUPercent}}%<br/>
-      MEM: {{printf "%.0f" .MemoryUsageMB}}MB/{{printf "%.0f" .MemoryLimitMB}}MB ({{printf "%.0f" .MemoryPercent}}%)
-    {{else}}--{{end}}
-  </td>
-  <td style="font-size:11px">
-    U:{{.UpdatesTotal}} R:{{.RollbacksTotal}}<br/>
-    H:{{.RestartsTotal}} F:{{.FailuresTotal}}
-  </td>
-  <td>
-    <button onclick="triggerService('{{.Name}}')">Trigger</button>
-    <button onclick="redeployService('{{.Name}}')">Redeploy</button>
-    {{if .Blocked}}&nbsp;<button onclick="unblockService('{{.Name}}')">Unblock</button>{{end}}
-  </td>
-</tr>
-{{end}}
-</tbody>
-</table>
-
-<h2>Recent Events</h2>
-<table>
-<thead><tr><th>Time</th><th>Service</th><th>Event</th><th>Level</th><th>Message</th></tr></thead>
-<tbody id="events-body">
-{{range .Events}}
-<tr>
-  <td style="white-space:nowrap;color:var(--text-dim)" title="{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
-  <td style="color:var(--text-muted)">{{.Service}}</td>
-  <td>{{.Event}}</td>
-  <td class="{{.Level}}">{{.Level}}</td>
-  <td style="color:var(--text-muted)">{{.Message}}</td>
-</tr>
-{{end}}
-</tbody>
-</table>
-
-<script>
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-
-function triggerService(name){
-  var btn=event.target;
-  btn.disabled=true;
-  btn.textContent='Triggering...';
-  fetch('/trigger/'+encodeURIComponent(name),{method:'POST'})
-    .then(function(r){
-      return r.json();
-    })
-    .then(function(data){
-      if(data.status==='skipped' && data.reason){
-        btn.textContent=data.reason==='auto_update is false'?'Disabled':'Skipped';
-      } else {
-        btn.textContent='Triggered!';
-      }
-      setTimeout(function(){btn.disabled=false;btn.textContent='Trigger';},2000);
-    })
-    .catch(function(){
-      btn.disabled=false;
-      btn.textContent='Error';
-      setTimeout(function(){btn.textContent='Trigger';},2000);
-    });
-}
-function redeployService(name){
-  if(!name){
-    alert('Service name is missing');
-    return;
-  }
-  if(!confirm('Redeploy '+name+'? This will run docker compose up -d.'))return;
-
-  var btn=event.target;
-  btn.disabled=true;
-  btn.textContent='Loading...';
-
-  fetch('/command-preview/'+encodeURIComponent(name))
-    .then(function(r){
-      if(!r.ok) throw new Error('Service not found or no compose files');
-      return r.json();
-    })
-    .then(function(data){
-      if(!data || !data.command){
-        btn.disabled=false;
-        btn.textContent='Redeploy';
-        alert('No command available for this service');
-        return;
-      }
-      if(confirm('Execute: '+data.command+'?')){
-        btn.textContent='Redeploying...';
-        return fetch('/redeploy/'+encodeURIComponent(name),{method:'POST'})
-          .then(function(r){
-            if(!r.ok) throw new Error('Redeploy failed');
-            btn.textContent='Started!';
-            setTimeout(function(){btn.disabled=false;btn.textContent='Redeploy';},2000);
-          });
-      } else {
-        btn.disabled=false;
-        btn.textContent='Redeploy';
-      }
-    })
-    .catch(function(err){
-      btn.disabled=false;
-      btn.textContent='Error';
-      alert('Failed: '+(err.message||'Unknown error'));
-      setTimeout(function(){btn.textContent='Redeploy';},2000);
-    });
-}
-function unblockService(name){
-  fetch('/unblock/'+encodeURIComponent(name),{method:'POST'}).catch(function(){});
-}
-
-function toggleTheme(){
-  var cur=document.documentElement.getAttribute('data-theme')||'dark';
-  var next=cur==='light'?'dark':'light';
-  document.documentElement.setAttribute('data-theme',next);
-  localStorage.setItem('theme',next);
-  document.getElementById('theme-toggle').textContent=next==='light'?'[dark]':'[light]';
-}
-(function(){
-  var saved=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');
-  document.getElementById('theme-toggle').textContent=saved==='light'?'[dark]':'[light]';
-})();
-
-var es=new EventSource('/ui/events');
-var sseRetryCount=0;
-es.onmessage=function(evt){
-  var e;try{e=JSON.parse(evt.data);}catch(_){return;}
-  var tbody=document.getElementById('events-body');
-  if(!tbody)return;
-  var ts=e.timestamp?e.timestamp.replace('T',' ').slice(0,19):'';
-  var row='<tr>'+
-    '<td style="white-space:nowrap;color:var(--text-dim)">'+esc(ts)+'</td>'+
-    '<td style="color:var(--text-muted)">'+esc(e.service||'')+'</td>'+
-    '<td>'+esc(e.event||'')+'</td>'+
-    '<td class="'+esc(e.level||'')+'">'+esc(e.level||'')+'</td>'+
-    '<td style="color:var(--text-muted)">'+esc(e.message||'')+'</td>'+
-    '</tr>';
-  tbody.insertAdjacentHTML('afterbegin',row);
-  while(tbody.rows.length>50){tbody.deleteRow(-1);}
-};
-es.onerror=function(){
-  sseRetryCount++;
-  if(sseRetryCount>5){
-    es.close();
-    console.error('SSE connection failed after 5 retries');
-  }
-};
-es.onopen=function(){
-  sseRetryCount=0;
-};
-
-function refreshStatus(){
-  fetch('/status')
-    .then(function(r){
-      if(!r.ok){
-        console.error('Failed to fetch status:', r.status);
-        return null;
-      }
-      return r.json();
-    })
-    .then(function(data){
-      if(!data || !data.services){
-        console.error('Invalid status response');
-        return;
-      }
-      var tbody=document.getElementById('status-body');
-      if(!tbody)return;
-    var openDetails={};
-    tbody.querySelectorAll('details[data-svc]').forEach(function(d){
-      if(d.open)openDetails[d.getAttribute('data-svc')]=true;
-    });
-    var rows='';
-    for(var i=0;i<data.services.length;i++){
-      var s=data.services[i];
-      var cpu=s.has_stats?Math.round(s.cpu_percent)+'% / '+Math.round(s.memory_percent)+'%':'--';
-      var actions='<button onclick="triggerService(\''+esc(s.name)+'\')">Trigger</button>';
-      actions+=' <button onclick="redeployService(\''+esc(s.name)+'\')">Redeploy</button>';
-      if(s.blocked){actions+=' <button onclick="unblockService(\''+esc(s.name)+'\')">Unblock</button>';}
-
-      // Calculate next check timing with proper null handling
-      var nextCheckText='--';
-      if(s.next_check){
-        try {
-          var next=new Date(s.next_check);
-          var now=new Date();
-          var diff=Math.round((next-now)/1000);
-          if(!isNaN(diff) && diff>0){
-            if(diff<60)nextCheckText=diff+'s';
-            else if(diff<3600)nextCheckText=Math.round(diff/60)+'m';
-            else nextCheckText=Math.round(diff/3600)+'h';
-          } else if(diff<=0) {
-            nextCheckText='now';
-          }
-        } catch(e) {
-          nextCheckText='--';
-        }
-      }
-      if(s.check_status==='checking')nextCheckText+=' <span style="color:var(--warning)">(checking...)</span>';
-
-      var nameCell=esc(s.name);
-      if(s.containers&&s.containers.length){
-        var cdivs='';
-        for(var j=0;j<s.containers.length;j++){
-          var c=s.containers[j];
-          cdivs+='<div class="ctr"><span class="ctr-name">'+esc(c.name||'')+'</span><span class="ctr-state">'+esc(c.state||'')+'</span><span>'+esc(c.status||'')+'</span></div>';
-        }
-        nameCell+='\n<details data-svc="'+esc(s.name)+'" style="margin-top:3px"><summary style="cursor:pointer;color:var(--text-muted);font-size:11px">'+s.containers.length+' container(s)</summary><div class="ctrs">'+cdivs+'</div></details>';
-      }
-      // Build config flags with explicit boolean checks
-      var configFlags='';
-      configFlags+='<span style="color:'+(s.auto_update===true?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-update '+(s.auto_update===true?'enabled':'disabled')+'">U</span> ';
-      configFlags+='<span style="color:'+(s.auto_heal===true?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-heal '+(s.auto_heal===true?'enabled':'disabled')+'">H</span> ';
-      configFlags+='<span style="color:'+(s.auto_start===true?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-start '+(s.auto_start===true?'enabled':'disabled')+'">S</span>';
-
-      // Build health indicator
-      var healthIcon='<span style="color:var(--text-dim)">?</span>';
-      if(s.healthy===true)healthIcon='<span style="color:var(--success)">✓</span>';
-      else if(s.healthy===false)healthIcon='<span style="color:var(--error)">✗</span>';
-
-      // Build status with error tooltip
-      var statusCell='<span class="'+esc(s.status)+'">'+esc(s.status)+'</span>';
-      if(s.errored)statusCell+=' <span title="'+esc(s.errored)+'" style="cursor:help">⚠️</span>';
-
-      // Build resources display with proper null handling
-      var resources='--';
-      if(s.has_stats){
-        var cpuPct = s.cpu_percent !== undefined ? Math.round(s.cpu_percent) : 0;
-        var memUsed = s.memory_usage_mb !== undefined ? Math.round(s.memory_usage_mb) : 0;
-        var memLimit = s.memory_limit_mb !== undefined ? Math.round(s.memory_limit_mb) : null;
-        var memPct = s.memory_percent !== undefined ? Math.round(s.memory_percent) : 0;
-
-        resources='CPU: '+cpuPct+'%<br/>';
-        if(memLimit !== null && memLimit > 0){
-          resources+='MEM: '+memUsed+'MB/'+memLimit+'MB ('+memPct+'%)';
-        } else {
-          resources+='MEM: '+memUsed+'MB (no limit)';
-        }
-      }
-
-      // Build deploy stats with null safety
-      var deployStats='U:'+(s.updates_total||0)+' R:'+(s.rollbacks_total||0)+'<br/>';
-      deployStats+='H:'+(s.restarts_total||0)+' F:'+(s.failures_total||0);
-
-      rows+='<tr>'+
-        '<td>'+nameCell+'</td>'+
-        '<td>'+statusCell+'</td>'+
-        '<td style="font-size:11px">'+configFlags+'</td>'+
-        '<td style="color:var(--text-muted);font-size:11px">'+nextCheckText+'</td>'+
-        '<td style="font-size:11px">'+healthIcon+'</td>'+
-        '<td style="color:var(--text-muted);font-size:11px">'+(s.image?esc(s.image)+'<br/>':'')+(s.image_digest?'<span style="color:var(--text-dim)">'+esc(s.image_digest)+'</span>':'--')+'</td>'+
-        '<td style="font-size:11px">'+resources+'</td>'+
-        '<td style="font-size:11px">'+deployStats+'</td>'+
-        '<td>'+actions+'</td>'+
-        '</tr>';
-    }
-    tbody.innerHTML=rows;
-    tbody.querySelectorAll('details[data-svc]').forEach(function(d){
-      if(openDetails[d.getAttribute('data-svc')])d.open=true;
-    });
-  }).catch(function(){});
-}
-setInterval(refreshStatus,15000);
-</script>
-</body>
-</html>`
 
 const dataStarHTML = `<!DOCTYPE html>
 <html lang="en">
@@ -1205,9 +791,8 @@ const dataStarHTML = `<!DOCTYPE html>
   <title>Dockward - data-star UI</title>
 
   <!-- data-star.dev -->
+  <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js"></script>
   <script type="module">
-    import { datastar } from 'https://cdn.jsdelivr.net/npm/@data-star/core@0.0.17/+esm'
-
     // Initialize data-star with SSE plugin
     datastar({
       plugins: [
@@ -1682,18 +1267,6 @@ const dataStarHTML = `<!DOCTYPE html>
 </html>`
 
 // GET /ui/v2 - data-star.dev powered UI
-func (a *API) handleUIDataStar(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(dataStarHTML)); err != nil {
-		logger.Printf("[api] ERROR: failed to write data-star UI: %v", err)
-	}
-}
 
 // POST /redeploy/<service> - force redeploy without image check
 func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {

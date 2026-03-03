@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.11] - 2026-03-03
+
+### Changed
+- **Web UI:** Replaced old template-based UI with modern data-star reactive UI
+- UI now uses data-star framework (1.0.0-RC.8) for reactive updates
+- Real-time updates via Server-Sent Events at `/ui/stream`
+- Removed `/ui/v2` endpoint (data-star UI is now the default at `/ui`)
+
+### Removed
+- Old template-based UI code (~400 lines of template HTML)
+- `uiData` struct and `uiTemplate` variable (no longer needed)
+- Unused imports: `html/template`, `os`
+
 ## [1.0.0-alpha.10] - 2026-03-03
 
 ### Added
