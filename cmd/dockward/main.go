@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,6 +15,7 @@ import (
 	"github.com/studiowebux/dockward/internal/notify"
 	"github.com/studiowebux/dockward/internal/push"
 	"github.com/studiowebux/dockward/internal/registry"
+	"github.com/studiowebux/dockward/internal/saferun"
 	"github.com/studiowebux/dockward/internal/warden"
 	"github.com/studiowebux/dockward/internal/watcher"
 	"github.com/studiowebux/dockward/internal/wizard"
@@ -35,10 +35,10 @@ func main() {
 		fs := flag.NewFlagSet("config", flag.ExitOnError)
 		configPath := fs.String("config", "/etc/dockward/config.json", "path to config file")
 		if err := fs.Parse(os.Args[2:]); err != nil {
-			log.Fatalf("config: %v", err)
+			logger.Fatalf("config: %v", err)
 		}
 		if err := wizard.Run(*configPath); err != nil {
-			log.Fatalf("config wizard: %v", err)
+			logger.Fatalf("config wizard: %v", err)
 		}
 		return
 	}
@@ -49,10 +49,10 @@ func main() {
 		fs := flag.NewFlagSet("warden-config", flag.ExitOnError)
 		configPath := fs.String("config", "/etc/dockward/warden.json", "path to warden config file")
 		if err := fs.Parse(os.Args[2:]); err != nil {
-			log.Fatalf("warden-config: %v", err)
+			logger.Fatalf("warden-config: %v", err)
 		}
 		if err := wizard.RunWarden(*configPath); err != nil {
-			log.Fatalf("warden config wizard: %v", err)
+			logger.Fatalf("warden config wizard: %v", err)
 		}
 		return
 	}
@@ -68,8 +68,6 @@ func main() {
 		return
 	}
 
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("[dockward] ")
 	watcher.SetVerbose(*verbose)
 
 	// Route to warden mode when requested.
@@ -81,9 +79,9 @@ func main() {
 	// Load configuration.
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		logger.Fatalf("failed to load config: %v", err)
 	}
-	log.Printf("loaded config: %d services, poll interval %ds", len(cfg.Services), cfg.Registry.PollInterval)
+	logger.Printf("loaded config: %d services, poll interval %ds", len(cfg.Services), cfg.Registry.PollInterval)
 
 	// Build notifiers.
 	dispatcher := buildDispatcher(cfg)
@@ -95,18 +93,18 @@ func main() {
 	// Create audit logger (no-op when path is empty).
 	auditLog, err := audit.New(cfg.Audit.Path)
 	if err != nil {
-		log.Fatalf("failed to open audit log: %v", err)
+		logger.Fatalf("failed to open audit log: %v", err)
 	}
 	defer auditLog.Close()
 	if cfg.Audit.Path != "" {
-		log.Printf("audit log: %s", cfg.Audit.Path)
+		logger.Printf("audit log: %s", cfg.Audit.Path)
 	}
 
 	// Attach push client if warden_url is configured.
 	if cfg.Push.WardenURL != "" {
 		pc := push.New(cfg.Push.WardenURL, cfg.Push.Token, cfg.Push.MachineID)
 		auditLog.WithPush(pc)
-		log.Printf("push: forwarding audit entries to warden at %s (machine=%s)", cfg.Push.WardenURL, cfg.Push.MachineID)
+		logger.Printf("push: forwarding audit entries to warden at %s (machine=%s)", cfg.Push.WardenURL, cfg.Push.MachineID)
 	}
 
 	// Create metrics, updater, healer, monitor, and API.
@@ -128,19 +126,19 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
+	saferun.Go("signal-handler", func() {
 		sig := <-sigCh
-		log.Printf("received %s, shutting down", sig)
+		logger.Printf("received %s, shutting down", sig)
 		cancel()
-	}()
+	})
 
-	// Start goroutines.
-	go updater.Run(ctx)
-	go healer.Run(ctx)
-	go monitor.Run(ctx)
-	go api.Run(ctx)
+	// Start goroutines with panic recovery.
+	saferun.RunWithRecovery("updater", ctx, updater.Run)
+	saferun.RunWithRecovery("healer", ctx, healer.Run)
+	saferun.RunWithRecovery("monitor", ctx, monitor.Run)
+	saferun.RunWithRecovery("api", ctx, api.Run)
 
-	log.Printf("dockward %s started", version)
+	logger.Printf("dockward %s started", version)
 
 	// Send startup notification.
 	dispatcher.Send(ctx, notify.Alert{
@@ -152,26 +150,26 @@ func main() {
 
 	// Block until shutdown.
 	<-ctx.Done()
-	log.Printf("stopped")
+	logger.Printf("stopped")
 }
 
 func runWarden(configPath string) {
 	wcfg, err := warden.LoadWarden(configPath)
 	if err != nil {
-		log.Fatalf("failed to load warden config: %v", err)
+		logger.Fatalf("failed to load warden config: %v", err)
 	}
-	log.Printf("warden mode: %d agent(s) configured, port %s", len(wcfg.Agents), wcfg.API.Port)
+	logger.Printf("warden mode: %d agent(s) configured, port %s", len(wcfg.Agents), wcfg.API.Port)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
+	saferun.Go("warden-signal-handler", func() {
 		sig := <-sigCh
-		log.Printf("received %s, shutting down", sig)
+		logger.Printf("received %s, shutting down", sig)
 		cancel()
-	}()
+	})
 
 	srv := warden.NewServer(wcfg)
 	srv.Run(ctx)
@@ -182,22 +180,22 @@ func buildDispatcher(cfg *config.Config) *notify.Dispatcher {
 
 	if cfg.Notifications.Discord != nil && cfg.Notifications.Discord.WebhookURL != "" {
 		notifiers = append(notifiers, notify.NewDiscord(cfg.Notifications.Discord.WebhookURL))
-		log.Printf("notification: discord enabled")
+		logger.Printf("notification: discord enabled")
 	}
 
 	if cfg.Notifications.SMTP != nil && cfg.Notifications.SMTP.Host != "" {
 		s := cfg.Notifications.SMTP
 		notifiers = append(notifiers, notify.NewSMTP(s.Host, s.Port, s.From, s.To, s.Username, s.Password))
-		log.Printf("notification: smtp enabled (%s -> %s)", s.From, s.To)
+		logger.Printf("notification: smtp enabled (%s -> %s)", s.From, s.To)
 	}
 
 	for _, wh := range cfg.Notifications.Webhooks {
 		w, err := notify.NewWebhook(wh.Name, wh.URL, wh.Method, wh.Headers, wh.Body)
 		if err != nil {
-			log.Fatalf("webhook %q: %v", wh.Name, err)
+			logger.Fatalf("webhook %q: %v", wh.Name, err)
 		}
 		notifiers = append(notifiers, w)
-		log.Printf("notification: webhook %q enabled", wh.Name)
+		logger.Printf("notification: webhook %q enabled", wh.Name)
 	}
 
 	return notify.NewDispatcher(notifiers...)

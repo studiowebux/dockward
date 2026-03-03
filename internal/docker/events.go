@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 	"net/url"
 	"time"
@@ -44,7 +44,7 @@ func (c *Client) StreamEvents(ctx context.Context, handler EventHandler) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("[events] stream disconnected: %v, reconnecting in 5s", err)
+		logger.Printf("[events] stream disconnected: %v, reconnecting in 5s", err)
 		select {
 		case <-ctx.Done():
 			return

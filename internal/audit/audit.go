@@ -9,7 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
+	"github.com/studiowebux/dockward/internal/saferun"
 	"os"
 	"path/filepath"
 	"sort"
@@ -157,7 +158,7 @@ func (l *Logger) rotate() error {
 
 	l.file = f
 	l.eventCount = 0
-	log.Printf("[audit] rotated log to %s", archivePath)
+	logger.Printf("[audit] rotated log to %s", archivePath)
 
 	// Clean up old archives (keep last 5)
 	l.cleanOldArchives()
@@ -182,7 +183,7 @@ func (l *Logger) cleanOldArchives() {
 	// Remove oldest ones
 	for i := 0; i < len(matches)-5; i++ {
 		if err := os.Remove(matches[i]); err == nil {
-			log.Printf("[audit] removed old archive: %s", matches[i])
+			logger.Printf("[audit] removed old archive: %s", matches[i])
 		}
 	}
 }
@@ -206,7 +207,7 @@ func (l *Logger) Write(e Entry) error {
 	// Check if rotation needed before write
 	if l.shouldRotate() {
 		if err := l.rotate(); err != nil {
-			log.Printf("[audit] rotation failed: %v", err)
+			logger.Printf("[audit] rotation failed: %v", err)
 		}
 	}
 
@@ -224,16 +225,18 @@ func (l *Logger) Write(e Entry) error {
 
 	// Fire-and-forget push to warden.
 	if p != nil {
-		go func() {
+		saferun.Go("audit-push", func() {
 			if sendErr := p.Send(context.Background(), e); sendErr != nil {
-				log.Printf("[audit] push to warden failed: %v", sendErr)
+				logger.Printf("[audit] push to warden failed: %v", sendErr)
 			}
-		}()
+		})
 	}
 
 	// Fan out to local SSE hub.
 	if b != nil {
-		go b.Broadcast(e)
+		saferun.Go("audit-broadcast", func() {
+			b.Broadcast(e)
+		})
 	}
 
 	return nil

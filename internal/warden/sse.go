@@ -4,7 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 )
 
@@ -58,7 +58,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			_, err := fmt.Fprintf(w, "data: %s\n\n", msg)
 			if err != nil {
-				log.Printf("warden: SSE write error: %v", err)
+				logger.Printf("warden: SSE write error: %v", err)
 				return
 			}
 			flusher.Flush()

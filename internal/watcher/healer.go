@@ -3,7 +3,7 @@ package watcher
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +23,7 @@ func SetVerbose(v bool) { verboseMode = v }
 // debugf logs only when verbose mode is on.
 func debugf(format string, args ...any) {
 	if verboseMode {
-		log.Printf(format, args...)
+		logger.Printf(format, args...)
 	}
 }
 
@@ -75,7 +75,7 @@ func NewHealer(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatc
 
 // Run starts the Docker event stream listener. Blocks until ctx is cancelled.
 func (h *Healer) Run(ctx context.Context) {
-	log.Printf("[healer] listening for Docker health events")
+	logger.Printf("[healer] listening for Docker health events")
 	h.seedHealthFromInspect(ctx)
 	h.docker.StreamEvents(ctx, func(event docker.Event) {
 		h.handleEvent(ctx, event)
@@ -95,7 +95,7 @@ func (h *Healer) seedHealthFromInspect(ctx context.Context) {
 		}
 		info, err := h.docker.InspectContainer(ctx, id)
 		if err != nil {
-			log.Printf("[healer] %s: boot inspect error: %v", svc.Name, err)
+			logger.Printf("[healer] %s: boot inspect error: %v", svc.Name, err)
 			continue
 		}
 		if info.State.Health == nil {
@@ -103,7 +103,7 @@ func (h *Healer) seedHealthFromInspect(ctx context.Context) {
 		}
 		healthy := info.State.Health.Status == "healthy"
 		h.metrics.SetHealthy(svc.Name, healthy)
-		log.Printf("[healer] %s: boot health: %s", svc.Name, info.State.Health.Status)
+		logger.Printf("[healer] %s: boot health: %s", svc.Name, info.State.Health.Status)
 	}
 }
 
@@ -142,7 +142,7 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 		reason = info.LastHealthOutput()
 	}
 
-	log.Printf("[healer] %s: unhealthy. Reason: %s", svc.Name, reason)
+	logger.Printf("[healer] %s: unhealthy. Reason: %s", svc.Name, reason)
 	h.metrics.SetHealthy(svc.Name, false)
 	h.setDegraded(svc.Name, true)
 
@@ -168,7 +168,7 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 		h.exhausted[svc.Name] = true
 		h.exhaustedMu.Unlock()
 		if !alreadyExhausted {
-			log.Printf("[healer] %s: max restarts (%d) reached, manual intervention required", svc.Name, svc.HealMaxRestarts)
+			logger.Printf("[healer] %s: max restarts (%d) reached, manual intervention required", svc.Name, svc.HealMaxRestarts)
 		}
 		return
 	}
@@ -180,7 +180,7 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 	}
 
 	// Restart the container.
-	log.Printf("[healer] %s: restarting", svc.Name)
+	logger.Printf("[healer] %s: restarting", svc.Name)
 	if err := h.audit.Write(audit.Entry{
 		Service:   svc.Name,
 		Event:     "restarting",
@@ -189,10 +189,10 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 		Container: containerName,
 		Reason:    reason,
 	}); err != nil {
-		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+		logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
 	}
 	if err := h.docker.RestartContainer(ctx, containerID, 10); err != nil {
-		log.Printf("[healer] %s: restart failed: %v", svc.Name, err)
+		logger.Printf("[healer] %s: restart failed: %v", svc.Name, err)
 		h.metrics.IncFailures(svc.Name)
 		h.dispatcher.Send(ctx, notify.Alert{
 			Service:   svc.Name,
@@ -224,12 +224,12 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 
 	info, err := h.docker.InspectContainer(ctx, containerID)
 	if err != nil {
-		log.Printf("[healer] %s: could not verify after restart: %v", svc.Name, err)
+		logger.Printf("[healer] %s: could not verify after restart: %v", svc.Name, err)
 		return
 	}
 
 	if info.State.Health != nil && info.State.Health.Status == "unhealthy" {
-		log.Printf("[healer] %s: still unhealthy after restart", svc.Name)
+		logger.Printf("[healer] %s: still unhealthy after restart", svc.Name)
 		h.metrics.IncFailures(svc.Name)
 
 		// Increment consecutive failure counter.
@@ -239,7 +239,7 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 		h.restartCountsMu.Unlock()
 
 		if count >= svc.HealMaxRestarts {
-			log.Printf("[healer] %s: giving up after %d consecutive failed restarts", svc.Name, count)
+			logger.Printf("[healer] %s: giving up after %d consecutive failed restarts", svc.Name, count)
 			h.dispatcher.Send(ctx, notify.Alert{
 				Service:   svc.Name,
 				Event:     "critical",
@@ -256,7 +256,7 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 				Container: containerName,
 				Reason:    info.LastHealthOutput(),
 			}); err != nil {
-				log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+				logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
 			}
 		} else {
 			h.dispatcher.Send(ctx, notify.Alert{
@@ -304,7 +304,7 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 		Container: containerName,
 		Reason:    reason,
 	}); err != nil {
-		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+		logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
 	}
 }
 
@@ -339,7 +339,7 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 		return
 	}
 
-	log.Printf("[healer] %s: recovered (healthy)", svc.Name)
+	logger.Printf("[healer] %s: recovered (healthy)", svc.Name)
 	h.metrics.SetHealthy(svc.Name, true)
 	h.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
@@ -355,7 +355,7 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 		Level:     "info",
 		Container: containerName,
 	}); err != nil {
-		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+		logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
 	}
 }
 
@@ -371,7 +371,7 @@ func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerN
 		return
 	}
 
-	log.Printf("[healer] %s: container died unexpectedly", svc.Name)
+	logger.Printf("[healer] %s: container died unexpectedly", svc.Name)
 	h.metrics.SetHealthy(svc.Name, false)
 	h.setDegraded(svc.Name, true)
 	h.dispatcher.Send(ctx, notify.Alert{
@@ -388,7 +388,7 @@ func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerN
 		Level:     "critical",
 		Container: containerName,
 	}); err != nil {
-		log.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+		logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
 	}
 }
 

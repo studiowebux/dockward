@@ -3,7 +3,7 @@ package notify
 
 import (
 	"context"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"time"
 )
 
@@ -50,7 +50,7 @@ func (d *Dispatcher) Send(ctx context.Context, alert Alert) {
 	}
 	for _, n := range d.notifiers {
 		if err := n.Send(ctx, alert); err != nil {
-			log.Printf("[notify] %s error: %v", n.Name(), err)
+			logger.Printf("[notify] %s error: %v", n.Name(), err)
 		}
 	}
 }

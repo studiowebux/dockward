@@ -4,7 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"io"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 	"strings"
 	"time"
@@ -47,7 +47,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		log.Printf("warden: marshal broadcast entry: %v", err)
+		logger.Printf("warden: marshal broadcast entry: %v", err)
 	} else {
 		s.hub.Broadcast(data)
 	}

@@ -3,7 +3,7 @@ package watcher
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/url"
 	"sync"
 	"time"
@@ -55,7 +55,7 @@ func NewMonitor(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispat
 // Blocks until ctx is cancelled.
 func (m *Monitor) Run(ctx context.Context) {
 	interval := time.Duration(m.cfg.Monitor.StatsInterval) * time.Second
-	log.Printf("[monitor] polling resources every %s", interval)
+	logger.Printf("[monitor] polling resources every %s", interval)
 
 	// Poll immediately so stats are available before the first tick.
 	m.pollAll(ctx)
@@ -112,7 +112,7 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
 	for _, id := range containerIDs {
 		raw, err := m.docker.ContainerStats(ctx, id)
 		if err != nil {
-			log.Printf("[monitor] %s: stats error for %s: %v", svc.Name, id, err)
+			logger.Printf("[monitor] %s: stats error for %s: %v", svc.Name, id, err)
 			continue
 		}
 
@@ -166,7 +166,7 @@ func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric str
 	m.alertedAt[key] = time.Now()
 	m.alertedAtMu.Unlock()
 
-	log.Printf("[monitor] %s: %s", svc.Name, message)
+	logger.Printf("[monitor] %s: %s", svc.Name, message)
 
 	m.dispatcher.Send(ctx, notify.Alert{
 		Service: svc.Name,
@@ -181,7 +181,7 @@ func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric str
 		Message: message,
 		Level:   "warning",
 	}); err != nil {
-		log.Printf("[monitor] %s: audit write error: %v", svc.Name, err)
+		logger.Printf("[monitor] %s: audit write error: %v", svc.Name, err)
 	}
 }
 

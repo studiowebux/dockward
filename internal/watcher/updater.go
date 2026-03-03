@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"os"
 	"strings"
 	"sync"
@@ -132,7 +132,7 @@ func (u *Updater) clearDeploying(service string) {
 // Run starts the polling loop. Blocks until ctx is cancelled.
 func (u *Updater) Run(ctx context.Context) {
 	interval := time.Duration(u.cfg.Registry.PollInterval) * time.Second
-	log.Printf("[updater] polling every %s", interval)
+	logger.Printf("[updater] polling every %s", interval)
 
 	// Run once immediately on startup.
 	u.pollAll(ctx)
@@ -229,7 +229,7 @@ func (u *Updater) cleanupOldEntries() {
 	}
 	u.composeHashesMu.Unlock()
 
-	log.Printf("[updater] cleaned old entries from state maps")
+	logger.Printf("[updater] cleaned old entries from state maps")
 }
 
 func (u *Updater) pollAll(ctx context.Context) {
@@ -245,7 +245,7 @@ func (u *Updater) pollAll(ctx context.Context) {
 		}
 		if svc.ComposeWatch {
 			if err := u.checkComposeDrift(ctx, svc); err != nil {
-				log.Printf("[updater] %s: compose drift check error: %v", svc.Name, err)
+				logger.Printf("[updater] %s: compose drift check error: %v", svc.Name, err)
 			}
 		}
 	}
@@ -290,7 +290,7 @@ func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) err
 		return nil // first run or no change
 	}
 
-	log.Printf("[updater] %s: compose file changed, redeploying", svc.Name)
+	logger.Printf("[updater] %s: compose file changed, redeploying", svc.Name)
 	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		return fmt.Errorf("compose up (drift): %w", err)
 	}
@@ -301,7 +301,7 @@ func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) err
 		Message: "Compose file changed. Redeployed without image pull.",
 		Level:   "info",
 	}); werr != nil {
-		log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+		logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
 	}
 
 	u.dispatcher.Send(ctx, notify.Alert{
@@ -332,7 +332,7 @@ func (u *Updater) handlePollError(ctx context.Context, svc config.Service, err e
 	u.errored[svc.Name] = msg
 	u.erroredMu.Unlock()
 
-	log.Printf("[updater] ERROR: %s: %v", svc.Name, err)
+	logger.Printf("[updater] ERROR: %s: %v", svc.Name, err)
 	u.metrics.IncFailures(svc.Name)
 	u.dispatcher.Send(ctx, notify.Alert{
 		Service: svc.Name,
@@ -345,7 +345,7 @@ func (u *Updater) handlePollError(ctx context.Context, svc config.Service, err e
 // handlePollErrorAlways logs error without suppression. Used for manual triggers.
 func (u *Updater) handlePollErrorAlways(ctx context.Context, svc config.Service, err error) {
 	msg := err.Error()
-	log.Printf("[updater] ERROR: %s: %v", svc.Name, err)
+	logger.Printf("[updater] ERROR: %s: %v", svc.Name, err)
 	u.metrics.IncFailures(svc.Name)
 
 	// Write to audit log
@@ -355,7 +355,7 @@ func (u *Updater) handlePollErrorAlways(ctx context.Context, svc config.Service,
 		Message: fmt.Sprintf("Manual trigger failed: %v", err),
 		Level:   "error",
 	}); werr != nil {
-		log.Printf("[updater] ERROR: %s: audit write error: %v", svc.Name, werr)
+		logger.Printf("[updater] ERROR: %s: audit write error: %v", svc.Name, werr)
 	}
 
 	u.dispatcher.Send(ctx, notify.Alert{
@@ -380,7 +380,7 @@ func (u *Updater) clearPollError(svc config.Service) {
 	delete(u.errored, svc.Name)
 	u.erroredMu.Unlock()
 
-	log.Printf("[updater] %s: recovered from previous error", svc.Name)
+	logger.Printf("[updater] %s: recovered from previous error", svc.Name)
 }
 
 // GetNextCheck returns the next scheduled check time for a service
@@ -459,7 +459,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 				continue // Still the same bad digest, skip silently.
 			}
 			// Remote digest changed (fix pushed), clear the block.
-			log.Printf("[updater] %s/%s: blocked digest changed, unblocking", svc.Name, img)
+			logger.Printf("[updater] %s/%s: blocked digest changed, unblocking", svc.Name, img)
 			u.blockedMu.Lock()
 			delete(u.blocked, key)
 			u.blockedMu.Unlock()
@@ -474,7 +474,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 			if notFoundDigest == remoteDigest {
 				continue // Same unresolvable digest, skip silently.
 			}
-			log.Printf("[updater] %s/%s: registry digest changed since not-found suppression, retrying", svc.Name, img)
+			logger.Printf("[updater] %s/%s: registry digest changed since not-found suppression, retrying", svc.Name, img)
 			u.notFoundMu.Lock()
 			delete(u.notFound, key)
 			u.notFoundMu.Unlock()
@@ -483,7 +483,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 		// Step 2: Get local digest from Docker.
 		localDigest := u.resolveLocalDigestForImage(ctx, svc, registryPrefix, img)
 		if localDigest == "" {
-			log.Printf("[updater] %s/%s: no local digest resolved, suppressing until registry digest changes", svc.Name, img)
+			logger.Printf("[updater] %s/%s: no local digest resolved, suppressing until registry digest changes", svc.Name, img)
 			u.notFoundMu.Lock()
 			u.notFound[key] = remoteDigest
 			u.notFoundMu.Unlock()
@@ -499,7 +499,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 				Message: fmt.Sprintf("Image %s not found locally. Suppressing until registry digest changes.", img),
 				Level:   "warning",
 			}); err != nil {
-				log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
+				logger.Printf("[updater] %s: audit write error: %v", svc.Name, err)
 			}
 			continue
 		}
@@ -513,7 +513,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 			continue
 		}
 
-		log.Printf("[updater] %s/%s: digest changed %s -> %s", svc.Name, img, shortDigest(localDigest), shortDigest(remoteDigest))
+		logger.Printf("[updater] %s/%s: digest changed %s -> %s", svc.Name, img, shortDigest(localDigest), shortDigest(remoteDigest))
 		changed = append(changed, imageChange{
 			Image:     img,
 			OldDigest: localDigest,
@@ -550,7 +550,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 
 		switch status {
 		case containerStuck:
-			log.Printf("[updater] %s: containers stuck (created/restarting), forcing down+up", svc.Name)
+			logger.Printf("[updater] %s: containers stuck (created/restarting), forcing down+up", svc.Name)
 			if err := compose.Restart(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 				return fmt.Errorf("compose restart (stuck containers): %w", err)
 			}
@@ -561,7 +561,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 				Level:   notify.LevelWarning,
 			})
 		default:
-			log.Printf("[updater] %s: images up to date but no containers, starting compose project", svc.Name)
+			logger.Printf("[updater] %s: images up to date but no containers, starting compose project", svc.Name)
 			if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 				return fmt.Errorf("compose up (no running container): %w", err)
 			}
@@ -593,44 +593,44 @@ func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Ser
 		if d := localImg.LocalDigest(registryPrefix); d != "" {
 			return d
 		}
-		log.Printf("[updater] %s/%s: image found by reference but no matching digest in RepoDigests", svc.Name, img)
+		logger.Printf("[updater] %s/%s: image found by reference but no matching digest in RepoDigests", svc.Name, img)
 	} else {
-		log.Printf("[updater] %s/%s: inspect image %s failed: %v", svc.Name, img, fullImage, err)
+		logger.Printf("[updater] %s/%s: inspect image %s failed: %v", svc.Name, img, fullImage, err)
 	}
 
 	// Strategy 2: resolve via running container's image ID.
 	container, status := u.findContainerByProject(ctx, svc.ComposeProject)
 	if status != containerRunning {
-		log.Printf("[updater] %s/%s: no running container for fallback digest resolution", svc.Name, img)
+		logger.Printf("[updater] %s/%s: no running container for fallback digest resolution", svc.Name, img)
 		return ""
 	}
 
 	info, err := u.docker.InspectContainer(ctx, container.ID)
 	if err != nil {
-		log.Printf("[updater] %s/%s: container inspect failed during fallback: %v", svc.Name, img, err)
+		logger.Printf("[updater] %s/%s: container inspect failed during fallback: %v", svc.Name, img, err)
 		return ""
 	}
 
 	// ContainerInspect.Image is the image ID (sha256:...).
 	imgByID, err := u.docker.InspectImage(ctx, info.Image)
 	if err != nil {
-		log.Printf("[updater] %s/%s: inspect image by ID %s failed: %v", svc.Name, img, info.Image, err)
+		logger.Printf("[updater] %s/%s: inspect image by ID %s failed: %v", svc.Name, img, info.Image, err)
 		return ""
 	}
 
 	if d := imgByID.LocalDigest(registryPrefix); d != "" {
-		log.Printf("[updater] %s/%s: resolved digest via container fallback", svc.Name, img)
+		logger.Printf("[updater] %s/%s: resolved digest via container fallback", svc.Name, img)
 		return d
 	}
 
-	log.Printf("[updater] %s/%s: fallback image has no matching RepoDigests for %s", svc.Name, img, registryPrefix)
+	logger.Printf("[updater] %s/%s: fallback image has no matching RepoDigests for %s", svc.Name, img, registryPrefix)
 	return ""
 }
 
 func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imageChange) error {
 	// Atomic deploy guard: prevent concurrent deploys for the same service.
 	if !u.tryStartDeploy(svc.Name) {
-		log.Printf("[updater] %s: deploy already in progress, skipping", svc.Name)
+		logger.Printf("[updater] %s: deploy already in progress, skipping", svc.Name)
 		return nil
 	}
 
@@ -651,7 +651,7 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imag
 				if info, err := u.docker.InspectContainer(ctx, c.ID); err == nil {
 					changed[i].OldRef = info.Config.Image
 					if err := u.docker.TagImage(ctx, info.Image, registryPrefix, "rollback"); err != nil {
-						log.Printf("[updater] %s/%s: failed to tag rollback: %v", svc.Name, ch.Image, err)
+						logger.Printf("[updater] %s/%s: failed to tag rollback: %v", svc.Name, ch.Image, err)
 					}
 				}
 				break
@@ -660,7 +660,7 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imag
 	}
 
 	// Step 2: Pull new images and recreate via compose.
-	log.Printf("[updater] %s: pulling and deploying", svc.Name)
+	logger.Printf("[updater] %s: pulling and deploying", svc.Name)
 	if err := compose.Pull(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose pull: %w", err)
@@ -681,7 +681,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 
 	grace := time.Duration(svc.HealthGrace) * time.Second
 	deadline := time.Now().Add(grace)
-	log.Printf("[updater] %s: health polling for %s", svc.Name, grace)
+	logger.Printf("[updater] %s: health polling for %s", svc.Name, grace)
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -696,7 +696,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 		container, cStatus := u.findContainerByProject(ctx, svc.ComposeProject)
 		if cStatus == containerNone {
 			if time.Now().After(deadline) {
-				log.Printf("[updater] %s: container not found after grace period, rolling back", svc.Name)
+				logger.Printf("[updater] %s: container not found after grace period, rolling back", svc.Name)
 				u.rollback(ctx, svc, changed, "container not found after deploy")
 				return
 			}
@@ -705,7 +705,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 
 		info, err := u.docker.InspectContainer(ctx, container.ID)
 		if err != nil {
-			log.Printf("[updater] %s: inspect failed during health poll: %v", svc.Name, err)
+			logger.Printf("[updater] %s: inspect failed during health poll: %v", svc.Name, err)
 			if time.Now().After(deadline) {
 				u.rollback(ctx, svc, changed, "inspect failed: "+err.Error())
 				return
@@ -732,13 +732,13 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 			return
 		case "unhealthy":
 			reason := info.LastHealthOutput()
-			log.Printf("[updater] %s: unhealthy, rolling back immediately", svc.Name)
+			logger.Printf("[updater] %s: unhealthy, rolling back immediately", svc.Name)
 			u.rollback(ctx, svc, changed, reason)
 			return
 		default: // "starting" or other transient states
 			if time.Now().After(deadline) {
 				reason := info.LastHealthOutput()
-				log.Printf("[updater] %s: still %s after grace period, rolling back", svc.Name, info.State.Health.Status)
+				logger.Printf("[updater] %s: still %s after grace period, rolling back", svc.Name, info.State.Health.Status)
 				u.rollback(ctx, svc, changed, reason)
 				return
 			}
@@ -748,7 +748,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 }
 
 func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, changed []imageChange, containerName, imageRef string) {
-	log.Printf("[updater] %s: deployed successfully", svc.Name)
+	logger.Printf("[updater] %s: deployed successfully", svc.Name)
 	u.metrics.IncUpdates(svc.Name)
 	u.metrics.SetHealthy(svc.Name, true)
 	for _, ch := range changed {
@@ -772,13 +772,13 @@ func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, chang
 		NewDigest: changed[0].NewDigest,
 		Container: containerName,
 	}); err != nil {
-		log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
+		logger.Printf("[updater] %s: audit write error: %v", svc.Name, err)
 	}
 	u.cleanupRollbacks(ctx, changed)
 }
 
 func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []imageChange, reason string) {
-	log.Printf("[updater] %s: rolling back. Reason: %s", svc.Name, reason)
+	logger.Printf("[updater] %s: rolling back. Reason: %s", svc.Name, reason)
 	u.metrics.IncRollbacks(svc.Name)
 	u.metrics.SetHealthy(svc.Name, false)
 
@@ -787,7 +787,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 	for _, ch := range changed {
 		key := svc.Name + "/" + ch.Image
 		u.blocked[key] = ch.NewDigest
-		log.Printf("[updater] %s/%s: blocked digest %s", svc.Name, ch.Image, shortDigest(ch.NewDigest))
+		logger.Printf("[updater] %s/%s: blocked digest %s", svc.Name, ch.Image, shortDigest(ch.NewDigest))
 	}
 	u.blockedMu.Unlock()
 	u.metrics.SetBlocked(svc.Name, true)
@@ -805,12 +805,12 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 
 		if ch.OldRef != "" && ch.OldRef != composeRef {
 			if err := u.docker.TagImage(ctx, rollbackImage, imageName(ch.OldRef), imageTag(ch.OldRef)); err != nil {
-				log.Printf("[updater] %s/%s: rollback retag to compose ref %s failed: %v", svc.Name, ch.Image, ch.OldRef, err)
+				logger.Printf("[updater] %s/%s: rollback retag to compose ref %s failed: %v", svc.Name, ch.Image, ch.OldRef, err)
 			}
 		}
 
 		if err := u.docker.TagImage(ctx, rollbackImage, registryPrefix, tag); err != nil {
-			log.Printf("[updater] %s/%s: rollback tag failed: %v", svc.Name, ch.Image, err)
+			logger.Printf("[updater] %s/%s: rollback tag failed: %v", svc.Name, ch.Image, err)
 			tagFailed = true
 		}
 	}
@@ -835,13 +835,13 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 			NewDigest: changed[0].NewDigest,
 			Reason:    reason,
 		}); werr != nil {
-			log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+			logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
 		}
 		return
 	}
 
 	if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
-		log.Printf("[updater] %s: rollback compose up failed: %v", svc.Name, err)
+		logger.Printf("[updater] %s: rollback compose up failed: %v", svc.Name, err)
 		u.metrics.IncFailures(svc.Name)
 		u.dispatcher.Send(ctx, notify.Alert{
 			Service:   svc.Name,
@@ -861,7 +861,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 			NewDigest: changed[0].NewDigest,
 			Reason:    reason,
 		}); werr != nil {
-			log.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+			logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
 		}
 		return
 	}
@@ -884,7 +884,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 		NewDigest: changed[0].NewDigest,
 		Reason:    reason,
 	}); err != nil {
-		log.Printf("[updater] %s: audit write error: %v", svc.Name, err)
+		logger.Printf("[updater] %s: audit write error: %v", svc.Name, err)
 	}
 
 	u.cleanupRollbacks(ctx, changed)
@@ -894,7 +894,7 @@ func (u *Updater) cleanupRollbacks(ctx context.Context, changed []imageChange) {
 	for _, ch := range changed {
 		registryPrefix := registryHost(u.cfg.Registry.URL) + "/" + imageName(ch.Image)
 		if err := u.docker.RemoveImage(ctx, registryPrefix+":rollback"); err != nil {
-			log.Printf("[updater] failed to remove rollback image %s:rollback: %v", registryPrefix, err)
+			logger.Printf("[updater] failed to remove rollback image %s:rollback: %v", registryPrefix, err)
 		}
 	}
 }
@@ -947,7 +947,7 @@ func (u *Updater) UnblockService(service string) bool {
 	u.blockedMu.Unlock()
 	if found {
 		u.metrics.SetBlocked(service, false)
-		log.Printf("[updater] %s: manually unblocked", service)
+		logger.Printf("[updater] %s: manually unblocked", service)
 	}
 	return found
 }
@@ -1027,7 +1027,7 @@ func (u *Updater) DeployedInfos() map[string]DeployedInfo {
 func (u *Updater) findContainerByProject(ctx context.Context, project string) (*docker.Container, containerStatus) {
 	containers, err := u.docker.ListContainersByProject(ctx, project)
 	if err != nil {
-		log.Printf("[updater] failed to list containers for project %s: %v", project, err)
+		logger.Printf("[updater] failed to list containers for project %s: %v", project, err)
 		return nil, containerNone
 	}
 	if len(containers) == 0 {

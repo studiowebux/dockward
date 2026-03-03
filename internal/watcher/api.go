@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 	"os"
 	"strconv"
@@ -16,6 +16,7 @@ import (
 	"github.com/studiowebux/dockward/internal/compose"
 	"github.com/studiowebux/dockward/internal/config"
 	"github.com/studiowebux/dockward/internal/hub"
+	"github.com/studiowebux/dockward/internal/saferun"
 )
 
 // API exposes HTTP endpoints for triggering updates, health, and metrics.
@@ -39,7 +40,7 @@ type broadcaster struct {
 func (b *broadcaster) Broadcast(e audit.Entry) {
 	data, err := json.Marshal(e)
 	if err != nil {
-		log.Printf("[api] broadcaster: marshal error: %v", err)
+		logger.Printf("[api] broadcaster: marshal error: %v", err)
 		return
 	}
 	b.hub.Broadcast(data)
@@ -90,16 +91,16 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 
 // Run starts the HTTP server. Blocks until ctx is cancelled.
 func (a *API) Run(ctx context.Context) {
-	go func() {
+	saferun.Go("api-shutdown", func() {
 		<-ctx.Done()
 		if err := a.server.Close(); err != nil {
-			log.Printf("[api] server close error: %v", err)
+			logger.Printf("[api] server close error: %v", err)
 		}
-	}()
+	})
 
-	log.Printf("[api] listening on %s", a.server.Addr)
+	logger.Printf("[api] listening on %s", a.server.Addr)
 	if err := a.server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Printf("[api] server error: %v", err)
+		logger.Printf("[api] server error: %v", err)
 	}
 }
 
@@ -125,8 +126,10 @@ func (a *API) handleTriggerAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[api] manual trigger: all services")
-	go a.updater.pollAll(context.Background())
+	logger.Printf("[api] manual trigger: all services")
+	saferun.Go("trigger-all", func() {
+		a.updater.pollAll(context.Background())
+	})
 
 	writeJSON(w, map[string]string{"status": "triggered", "scope": "all"})
 }
@@ -168,14 +171,14 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			found = true
-			log.Printf("[api] manual trigger: %s", svc.Name)
-			go func() {
+			logger.Printf("[api] manual trigger: %s", svc.Name)
+			saferun.Go("manual-trigger-"+svc.Name, func() {
 				ctx := context.Background()
 				if err := a.updater.checkAndUpdate(ctx, svc); err != nil {
 					// Use non-suppressing error handler for manual triggers
 					a.updater.handlePollErrorAlways(ctx, svc, err)
 				}
-			}()
+			})
 			break
 		}
 	}
@@ -487,7 +490,7 @@ func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (a *API) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	if _, err := w.Write([]byte(a.metrics.Prometheus())); err != nil {
-		log.Printf("[api] metrics write error: %v", err)
+		logger.Printf("[api] metrics write error: %v", err)
 	}
 }
 
@@ -510,7 +513,7 @@ func (a *API) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := a.audit.Recent(limit)
 	if err != nil {
-		log.Printf("[api] audit read error: %v", err)
+		logger.Printf("[api] audit read error: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -539,7 +542,7 @@ func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 	// killed after 30 s. Uses ResponseController (Go 1.20+).
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
-		log.Printf("[api] ui/events: could not clear write deadline: %v", err)
+		logger.Printf("[api] ui/events: could not clear write deadline: %v", err)
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -550,7 +553,7 @@ func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 	// Replay recent entries so the browser gets immediate content on connect.
 	recent, err := a.audit.Recent(50)
 	if err != nil {
-		log.Printf("[api] ui/events: audit read error: %v", err)
+		logger.Printf("[api] ui/events: audit read error: %v", err)
 	}
 	for _, e := range recent { // oldest-first (as stored)
 		data, merr := json.Marshal(e)
@@ -574,7 +577,7 @@ func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if _, werr := fmt.Fprintf(w, "data: %s\n\n", msg); werr != nil {
-				log.Printf("[api] ui/events: write error: %v", werr)
+				logger.Printf("[api] ui/events: write error: %v", werr)
 				return
 			}
 			flusher.Flush()
@@ -585,7 +588,7 @@ func (a *API) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("[api] json encode error: %v", err)
+		logger.Printf("[api] json encode error: %v", err)
 	}
 }
 
@@ -617,7 +620,7 @@ func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	events, err := a.audit.Recent(20)
 	if err != nil {
-		log.Printf("[api] ui: audit read error: %v", err)
+		logger.Printf("[api] ui: audit read error: %v", err)
 	}
 	// Reverse so newest event appears first.
 	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
@@ -635,7 +638,7 @@ func (a *API) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := uiTemplate.Execute(w, data); err != nil {
-		log.Printf("[api] ui: template error: %v", err)
+		logger.Printf("[api] ui: template error: %v", err)
 	}
 }
 
@@ -1035,14 +1038,502 @@ setInterval(refreshStatus,15000);
 </body>
 </html>`
 
+const dataStarHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dockward - data-star UI</title>
+
+  <!-- data-star.dev -->
+  <script type="module">
+    import { datastar } from 'https://cdn.jsdelivr.net/npm/@data-star/core@0.0.17/+esm'
+
+    // Initialize data-star with SSE plugin
+    datastar({
+      plugins: [
+        // SSE plugin for real-time updates
+        {
+          name: 'sse',
+          onload: (ctx) => {
+            // Connect to SSE endpoint
+            const eventSource = new EventSource('/ui/stream')
+
+            // Handle status updates
+            eventSource.addEventListener('status', (e) => {
+              const data = JSON.parse(e.data)
+              ctx.store.services = data.services
+              ctx.store.uptime = data.uptime
+              ctx.store.lastUpdate = new Date().toISOString()
+            })
+
+            // Handle audit events
+            eventSource.addEventListener('audit', (e) => {
+              const event = JSON.parse(e.data)
+              // Prepend to events array (keep last 50)
+              ctx.store.events = [event, ...ctx.store.events].slice(0, 50)
+            })
+
+            // Handle connection errors
+            eventSource.onerror = () => {
+              ctx.store.connectionStatus = 'error'
+              setTimeout(() => {
+                ctx.store.connectionStatus = 'reconnecting'
+              }, 5000)
+            }
+
+            eventSource.onopen = () => {
+              ctx.store.connectionStatus = 'connected'
+            }
+          }
+        }
+      ]
+    })
+  </script>
+
+  <!-- Minimal CSS -->
+  <style>
+    :root {
+      --bg: #1a1a1a;
+      --surface: #2a2a2a;
+      --text: #e0e0e0;
+      --text-dim: #666;
+      --success: #4caf50;
+      --error: #f44336;
+      --warning: #ff9800;
+      --info: #2196f3;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 12px;
+      background: var(--bg);
+      color: var(--text);
+      padding: 1rem;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 0;
+      border-bottom: 1px solid var(--surface);
+      margin-bottom: 1rem;
+    }
+
+    .connection-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 0.5rem;
+    }
+
+    .connected { background: var(--success); }
+    .reconnecting { background: var(--warning); animation: pulse 1s infinite; }
+    .error { background: var(--error); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+    }
+
+    th {
+      text-align: left;
+      padding: 0.5rem;
+      background: var(--surface);
+      border-bottom: 1px solid #444;
+      font-weight: 500;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    td {
+      padding: 0.5rem;
+      border-bottom: 1px solid #333;
+    }
+
+    .service-row {
+      transition: background 0.3s;
+    }
+
+    .service-row[data-updating="true"] {
+      background: rgba(33, 150, 243, 0.1);
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 500;
+    }
+
+    .status-ok { background: var(--success); color: white; }
+    .status-error { background: var(--error); color: white; }
+    .status-deploying { background: var(--info); color: white; }
+    .status-checking { background: var(--warning); color: white; }
+
+    .config-flags {
+      display: flex;
+      gap: 4px;
+    }
+
+    .config-flag {
+      width: 16px;
+      height: 16px;
+      border-radius: 2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
+    }
+
+    .flag-enabled { background: var(--success); color: white; }
+    .flag-disabled { background: #444; color: #888; }
+
+    button {
+      padding: 4px 8px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid #444;
+      border-radius: 3px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    button:hover:not(:disabled) {
+      background: #3a3a3a;
+      border-color: #666;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.loading {
+      position: relative;
+      color: transparent;
+    }
+
+    button.loading::after {
+      content: '';
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      top: 50%;
+      left: 50%;
+      margin: -6px 0 0 -6px;
+      border: 2px solid var(--text);
+      border-radius: 50%;
+      border-top-color: transparent;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .next-check {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+
+    .container-details {
+      margin-top: 4px;
+      padding-left: 1rem;
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+
+    .container-stat {
+      display: inline-block;
+      margin-right: 1rem;
+    }
+
+    .resource-bar {
+      display: inline-block;
+      width: 100px;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      overflow: hidden;
+      margin: 0 4px;
+      vertical-align: middle;
+    }
+
+    .resource-fill {
+      height: 100%;
+      background: var(--success);
+      transition: width 0.3s, background 0.3s;
+    }
+
+    .resource-fill.warning { background: var(--warning); }
+    .resource-fill.danger { background: var(--error); }
+  </style>
+</head>
+<body>
+  <div class="container" data-store="{
+    services: [],
+    events: [],
+    connectionStatus: 'connecting',
+    uptime: 0,
+    lastUpdate: null
+  }">
+
+    <!-- Header -->
+    <header>
+      <h1>Dockward</h1>
+      <div>
+        <span
+          class="connection-indicator"
+          data-class="$connectionStatus"
+        ></span>
+        <span data-text="$connectionStatus === 'connected' ? 'Live' : $connectionStatus"></span>
+        <span data-show="$lastUpdate" data-text="' • Updated: ' + new Date($lastUpdate).toLocaleTimeString()"></span>
+      </div>
+    </header>
+
+    <!-- Services Table -->
+    <section>
+      <h2>Services</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Service</th>
+            <th>Status</th>
+            <th>Config</th>
+            <th>Next Check</th>
+            <th>Resources</th>
+            <th>Stats</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody data-each="service in $services">
+          <tr
+            class="service-row"
+            data-updating="$service.check_status === 'checking'"
+          >
+            <!-- Service Name -->
+            <td>
+              <strong data-text="$service.name"></strong>
+              <div data-show="$service.containers?.length" class="container-details">
+                <div data-each="container in $service.containers">
+                  <span class="container-stat">
+                    <span data-text="$container.name"></span>:
+                    <span data-text="$container.state"></span>
+                  </span>
+                </div>
+              </div>
+            </td>
+
+            <!-- Status -->
+            <td>
+              <span
+                class="status-badge"
+                data-class="'status-' + $service.status"
+                data-text="$service.status"
+              ></span>
+              <span
+                data-show="$service.errored"
+                data-text="' ⚠'"
+                title="$service.errored"
+                style="cursor: help;"
+              ></span>
+            </td>
+
+            <!-- Config Flags -->
+            <td>
+              <div class="config-flags">
+                <span
+                  class="config-flag"
+                  data-class="$service.auto_update ? 'flag-enabled' : 'flag-disabled'"
+                  title="Auto Update"
+                >U</span>
+                <span
+                  class="config-flag"
+                  data-class="$service.auto_heal ? 'flag-enabled' : 'flag-disabled'"
+                  title="Auto Heal"
+                >H</span>
+                <span
+                  class="config-flag"
+                  data-class="$service.auto_start ? 'flag-enabled' : 'flag-disabled'"
+                  title="Auto Start"
+                >S</span>
+              </div>
+            </td>
+
+            <!-- Next Check -->
+            <td>
+              <span
+                class="next-check"
+                data-show="$service.next_check"
+                data-text="formatTimeUntil($service.next_check)"
+              ></span>
+              <span
+                data-show="$service.check_status === 'checking'"
+                style="color: var(--warning);"
+              >⏳ checking...</span>
+            </td>
+
+            <!-- Resources -->
+            <td>
+              <div data-show="$service.has_stats">
+                <div>
+                  CPU: <span data-text="Math.round($service.cpu_percent) + '%'"></span>
+                  <span class="resource-bar">
+                    <span
+                      class="resource-fill"
+                      data-style="'width: ' + $service.cpu_percent + '%'"
+                      data-class="$service.cpu_percent > 80 ? 'danger' : $service.cpu_percent > 60 ? 'warning' : ''"
+                    ></span>
+                  </span>
+                </div>
+                <div>
+                  MEM: <span data-text="Math.round($service.memory_usage_mb) + 'MB'"></span>
+                  <span class="resource-bar">
+                    <span
+                      class="resource-fill"
+                      data-style="'width: ' + $service.memory_percent + '%'"
+                      data-class="$service.memory_percent > 85 ? 'danger' : $service.memory_percent > 70 ? 'warning' : ''"
+                    ></span>
+                  </span>
+                </div>
+              </div>
+              <span data-show="!$service.has_stats" style="color: var(--text-dim);">--</span>
+            </td>
+
+            <!-- Stats -->
+            <td style="font-size: 10px;">
+              <div>U: <span data-text="$service.updates_total || 0"></span></div>
+              <div>R: <span data-text="$service.rollbacks_total || 0"></span></div>
+              <div>H: <span data-text="$service.restarts_total || 0"></span></div>
+              <div>F: <span data-text="$service.failures_total || 0"></span></div>
+            </td>
+
+            <!-- Actions -->
+            <td>
+              <button
+                data-on-click="triggerService($service.name)"
+                data-disabled="$service.check_status === 'checking'"
+              >Trigger</button>
+              <button
+                data-on-click="redeployService($service.name)"
+              >Redeploy</button>
+              <button
+                data-show="$service.blocked"
+                data-on-click="unblockService($service.name)"
+              >Unblock</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Events -->
+    <section>
+      <h2>Recent Events</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Service</th>
+            <th>Event</th>
+            <th>Level</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody data-each="event in $events">
+          <tr>
+            <td
+              style="font-size: 10px; color: var(--text-dim);"
+              data-text="new Date($event.timestamp).toLocaleString()"
+            ></td>
+            <td data-text="$event.service"></td>
+            <td data-text="$event.event"></td>
+            <td>
+              <span
+                class="status-badge"
+                data-class="'status-' + ($event.level === 'critical' ? 'error' : $event.level)"
+                data-text="$event.level"
+              ></span>
+            </td>
+            <td
+              style="font-size: 11px; color: var(--text-dim);"
+              data-text="$event.message"
+            ></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+  </div>
+
+  <!-- Helper functions -->
+  <script>
+    // Format time until next check
+    window.formatTimeUntil = function(timestamp) {
+      if (!timestamp) return '--'
+      const diff = new Date(timestamp) - new Date()
+      if (diff < 0) return 'now'
+      if (diff < 60000) return Math.round(diff / 1000) + 's'
+      if (diff < 3600000) return Math.round(diff / 60000) + 'm'
+      return Math.round(diff / 3600000) + 'h'
+    }
+
+    // Service actions
+    window.triggerService = async function(name) {
+      await fetch(` + "`" + `/trigger/${name}` + "`" + `, { method: 'POST' })
+    }
+
+    window.redeployService = async function(name) {
+      if (!confirm(` + "`" + `Redeploy ${name}?` + "`" + `)) return
+      const preview = await fetch(` + "`" + `/command-preview/${name}` + "`" + `).then(r => r.json())
+      if (confirm(` + "`" + `Execute: ${preview.command}?` + "`" + `)) {
+        await fetch(` + "`" + `/redeploy/${name}` + "`" + `, { method: 'POST' })
+      }
+    }
+
+    window.unblockService = async function(name) {
+      await fetch(` + "`" + `/unblock/${name}` + "`" + `, { method: 'POST' })
+    }
+  </script>
+</body>
+</html>`
+
 // GET /ui/v2 - data-star.dev powered UI
 func (a *API) handleUIDataStar(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// For now, return not implemented. The ui_datastar.html file exists but needs to be embedded
-	http.Error(w, "data-star UI available at /ui/v2 (not yet embedded)", http.StatusNotImplemented)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(dataStarHTML)); err != nil {
+		logger.Printf("[api] ERROR: failed to write data-star UI: %v", err)
+	}
 }
 
 // POST /redeploy/<service> - force redeploy without image check
@@ -1077,18 +1568,18 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[api] force redeploy: %s", svc.Name)
-	go func() {
+	logger.Printf("[api] force redeploy: %s", svc.Name)
+	saferun.Go("force-redeploy-"+svc.Name, func() {
 		ctx := context.Background()
 		if err := compose.Up(ctx, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
-			log.Printf("[api] ERROR: force redeploy failed for %s: %v", svc.Name, err)
+			logger.Printf("[api] ERROR: force redeploy failed for %s: %v", svc.Name, err)
 			if werr := a.audit.Write(audit.Entry{
 				Service: svc.Name,
 				Event:   "force_redeploy_failed",
 				Message: fmt.Sprintf("Force redeploy failed: %v", err),
 				Level:   "error",
 			}); werr != nil {
-				log.Printf("[api] ERROR: audit write error: %v", werr)
+				logger.Printf("[api] ERROR: audit write error: %v", werr)
 			}
 			return
 		}
@@ -1099,9 +1590,9 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 			Message: "Forced redeploy via API",
 			Level:   "info",
 		}); werr != nil {
-			log.Printf("[api] ERROR: audit write error: %v", werr)
+			logger.Printf("[api] ERROR: audit write error: %v", werr)
 		}
-	}()
+	})
 
 	writeJSON(w, map[string]string{"status": "redeploying", "service": serviceName})
 }

@@ -109,3 +109,14 @@ func Debug(format string, args ...interface{}) {
 		log.Printf("[DEBUG] "+format, args...)
 	}
 }
+
+// Printf is a drop-in replacement for log.Printf that uses syslog.
+func Printf(format string, args ...interface{}) {
+	Info(format, args...)
+}
+
+// Fatalf is a drop-in replacement for log.Fatalf that uses syslog.
+func Fatalf(format string, args ...interface{}) {
+	Critical(format, args...)
+	os.Exit(1)
+}

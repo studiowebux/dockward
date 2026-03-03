@@ -2,7 +2,7 @@ package warden
 
 import (
 	"encoding/json"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"os"
 	"sync"
 	"time"
@@ -99,19 +99,19 @@ func (s *Store) LoadState(path string) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path from config, not user input
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("warden: load state %s: %v", path, err)
+			logger.Printf("warden: load state %s: %v", path, err)
 		}
 		return
 	}
 	var entries []audit.Entry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		log.Printf("warden: parse state %s: %v", path, err)
+		logger.Printf("warden: parse state %s: %v", path, err)
 		return
 	}
 	for _, e := range entries {
 		s.Append(e)
 	}
-	log.Printf("warden: restored %d event(s) from %s", len(entries), path)
+	logger.Printf("warden: restored %d event(s) from %s", len(entries), path)
 }
 
 // SaveState writes the current ring buffer (newest-first) to path as JSON.
@@ -127,14 +127,14 @@ func (s *Store) SaveState(path string) {
 	}
 	data, err := json.Marshal(events)
 	if err != nil {
-		log.Printf("warden: marshal state: %v", err)
+		logger.Printf("warden: marshal state: %v", err)
 		return
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil { // #nosec G306
-		log.Printf("warden: save state %s: %v", path, err)
+		logger.Printf("warden: save state %s: %v", path, err)
 		return
 	}
-	log.Printf("warden: saved %d event(s) to %s", len(events), path)
+	logger.Printf("warden: saved %d event(s) to %s", len(events), path)
 }
 
 // AgentStates returns a snapshot of all agent states.

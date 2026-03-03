@@ -5,7 +5,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"os"
 	"os/exec"
 	"strings"
@@ -37,7 +37,7 @@ func run(ctx context.Context, composeFiles []string, project string, envFile str
 	}
 	cmdArgs = append(cmdArgs, args...)
 
-	log.Printf("[compose] docker %s", strings.Join(cmdArgs, " "))
+	logger.Printf("[compose] docker %s", strings.Join(cmdArgs, " "))
 
 	cmd := exec.CommandContext(ctx, "docker", cmdArgs...) // #nosec G204 -- args from local config file, not user input
 

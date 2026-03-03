@@ -3,7 +3,7 @@ package warden
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 	"time"
 
@@ -114,7 +114,7 @@ func (hb *Heartbeat) transition(id string, nowOnline bool) {
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		log.Printf("warden: heartbeat marshal: %v", err)
+		logger.Printf("warden: heartbeat marshal: %v", err)
 		return
 	}
 	hb.hub.Broadcast(data)

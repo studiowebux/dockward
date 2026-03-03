@@ -3,11 +3,12 @@ package warden
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 	"time"
 
 	"github.com/studiowebux/dockward/internal/hub"
+	"github.com/studiowebux/dockward/internal/saferun"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -53,14 +54,14 @@ func NewServer(cfg *WardenConfig) *Server {
 // Run starts the heartbeat goroutine and HTTP server.
 // Blocks until ctx is cancelled, then performs a graceful shutdown.
 func (s *Server) Run(ctx context.Context) {
-	go s.heartbeat.Run(ctx)
+	saferun.RunWithRecovery("warden-heartbeat", ctx, s.heartbeat.Run)
 
-	go func() {
-		log.Printf("warden: listening on %s", s.server.Addr)
+	saferun.Go("warden-server", func() {
+		logger.Printf("warden: listening on %s", s.server.Addr)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("warden: server error: %v", err)
+			logger.Printf("warden: server error: %v", err)
 		}
-	}()
+	})
 
 	<-ctx.Done()
 
@@ -69,9 +70,9 @@ func (s *Server) Run(ctx context.Context) {
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := s.server.Shutdown(shutCtx); err != nil {
-		log.Printf("warden: shutdown error: %v", err)
+		logger.Printf("warden: shutdown error: %v", err)
 	}
-	log.Printf("warden: stopped")
+	logger.Printf("warden: stopped")
 }
 
 // handleHealth returns 200 OK — used when a warden itself is monitored upstream.

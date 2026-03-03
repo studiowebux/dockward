@@ -4,7 +4,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"html/template"
-	"log"
+	"github.com/studiowebux/dockward/internal/logger"
 	"net/http"
 	"os"
 	"sort"
@@ -203,7 +203,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := dashboardTmpl.Execute(w, data); err != nil {
-		log.Printf("warden: render dashboard: %v", err)
+		logger.Printf("warden: render dashboard: %v", err)
 	}
 }
 
