@@ -798,24 +798,65 @@ function triggerService(name){
   btn.disabled=true;
   btn.textContent='Triggering...';
   fetch('/trigger/'+encodeURIComponent(name),{method:'POST'})
-    .then(function(){btn.textContent='Triggered!';setTimeout(function(){btn.disabled=false;btn.textContent='Trigger';},2000);})
-    .catch(function(){btn.disabled=false;btn.textContent='Error';setTimeout(function(){btn.textContent='Trigger';},2000);});
+    .then(function(r){
+      return r.json();
+    })
+    .then(function(data){
+      if(data.status==='skipped' && data.reason){
+        btn.textContent=data.reason==='auto_update is false'?'Disabled':'Skipped';
+      } else {
+        btn.textContent='Triggered!';
+      }
+      setTimeout(function(){btn.disabled=false;btn.textContent='Trigger';},2000);
+    })
+    .catch(function(){
+      btn.disabled=false;
+      btn.textContent='Error';
+      setTimeout(function(){btn.textContent='Trigger';},2000);
+    });
 }
 function redeployService(name){
+  if(!name){
+    alert('Service name is missing');
+    return;
+  }
   if(!confirm('Redeploy '+name+'? This will run docker compose up -d.'))return;
+
+  var btn=event.target;
+  btn.disabled=true;
+  btn.textContent='Loading...';
+
   fetch('/command-preview/'+encodeURIComponent(name))
-    .then(function(r){return r.json();})
+    .then(function(r){
+      if(!r.ok) throw new Error('Service not found or no compose files');
+      return r.json();
+    })
     .then(function(data){
+      if(!data || !data.command){
+        btn.disabled=false;
+        btn.textContent='Redeploy';
+        alert('No command available for this service');
+        return;
+      }
       if(confirm('Execute: '+data.command+'?')){
-        var btn=event.target;
-        btn.disabled=true;
         btn.textContent='Redeploying...';
-        fetch('/redeploy/'+encodeURIComponent(name),{method:'POST'})
-          .then(function(){btn.textContent='Started!';setTimeout(function(){btn.disabled=false;btn.textContent='Redeploy';},2000);})
-          .catch(function(){btn.disabled=false;btn.textContent='Error';setTimeout(function(){btn.textContent='Redeploy';},2000);});
+        return fetch('/redeploy/'+encodeURIComponent(name),{method:'POST'})
+          .then(function(r){
+            if(!r.ok) throw new Error('Redeploy failed');
+            btn.textContent='Started!';
+            setTimeout(function(){btn.disabled=false;btn.textContent='Redeploy';},2000);
+          });
+      } else {
+        btn.disabled=false;
+        btn.textContent='Redeploy';
       }
     })
-    .catch(function(){alert('Failed to get command preview');});
+    .catch(function(err){
+      btn.disabled=false;
+      btn.textContent='Error';
+      alert('Failed: '+(err.message||'Unknown error'));
+      setTimeout(function(){btn.textContent='Redeploy';},2000);
+    });
 }
 function unblockService(name){
   fetch('/unblock/'+encodeURIComponent(name),{method:'POST'}).catch(function(){});
@@ -866,16 +907,22 @@ function refreshStatus(){
       actions+=' <button onclick="redeployService(\''+esc(s.name)+'\')">Redeploy</button>';
       if(s.blocked){actions+=' <button onclick="unblockService(\''+esc(s.name)+'\')">Unblock</button>';}
 
-      // Calculate next check timing
+      // Calculate next check timing with proper null handling
       var nextCheckText='--';
       if(s.next_check){
-        var next=new Date(s.next_check);
-        var now=new Date();
-        var diff=Math.round((next-now)/1000);
-        if(diff>0){
-          if(diff<60)nextCheckText=diff+'s';
-          else if(diff<3600)nextCheckText=Math.round(diff/60)+'m';
-          else nextCheckText=Math.round(diff/3600)+'h';
+        try {
+          var next=new Date(s.next_check);
+          var now=new Date();
+          var diff=Math.round((next-now)/1000);
+          if(!isNaN(diff) && diff>0){
+            if(diff<60)nextCheckText=diff+'s';
+            else if(diff<3600)nextCheckText=Math.round(diff/60)+'m';
+            else nextCheckText=Math.round(diff/3600)+'h';
+          } else if(diff<=0) {
+            nextCheckText='now';
+          }
+        } catch(e) {
+          nextCheckText='--';
         }
       }
       if(s.check_status==='checking')nextCheckText+=' <span style="color:var(--warning)">(checking...)</span>';
@@ -889,11 +936,11 @@ function refreshStatus(){
         }
         nameCell+='\n<details data-svc="'+esc(s.name)+'" style="margin-top:3px"><summary style="cursor:pointer;color:var(--text-muted);font-size:11px">'+s.containers.length+' container(s)</summary><div class="ctrs">'+cdivs+'</div></details>';
       }
-      // Build config flags
+      // Build config flags with explicit boolean checks
       var configFlags='';
-      configFlags+='<span style="color:'+(s.auto_update?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-update">U</span> ';
-      configFlags+='<span style="color:'+(s.auto_heal?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-heal">H</span> ';
-      configFlags+='<span style="color:'+(s.auto_start?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-start">S</span>';
+      configFlags+='<span style="color:'+(s.auto_update===true?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-update '+(s.auto_update===true?'enabled':'disabled')+'">U</span> ';
+      configFlags+='<span style="color:'+(s.auto_heal===true?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-heal '+(s.auto_heal===true?'enabled':'disabled')+'">H</span> ';
+      configFlags+='<span style="color:'+(s.auto_start===true?'var(--success)':'var(--text-dim)')+';font-size:11px" title="Auto-start '+(s.auto_start===true?'enabled':'disabled')+'">S</span>';
 
       // Build health indicator
       var healthIcon='<span style="color:var(--text-dim)">?</span>';
@@ -904,16 +951,25 @@ function refreshStatus(){
       var statusCell='<span class="'+esc(s.status)+'">'+esc(s.status)+'</span>';
       if(s.errored)statusCell+=' <span title="'+esc(s.errored)+'" style="cursor:help">⚠️</span>';
 
-      // Build resources display
+      // Build resources display with proper null handling
       var resources='--';
       if(s.has_stats){
-        resources='CPU: '+Math.round(s.cpu_percent)+'%<br/>';
-        resources+='MEM: '+Math.round(s.memory_usage_mb||0)+'MB/'+(s.memory_limit_mb?Math.round(s.memory_limit_mb)+'MB':'?')+' ('+Math.round(s.memory_percent)+'%)';
+        var cpuPct = s.cpu_percent !== undefined ? Math.round(s.cpu_percent) : 0;
+        var memUsed = s.memory_usage_mb !== undefined ? Math.round(s.memory_usage_mb) : 0;
+        var memLimit = s.memory_limit_mb !== undefined ? Math.round(s.memory_limit_mb) : null;
+        var memPct = s.memory_percent !== undefined ? Math.round(s.memory_percent) : 0;
+
+        resources='CPU: '+cpuPct+'%<br/>';
+        if(memLimit !== null && memLimit > 0){
+          resources+='MEM: '+memUsed+'MB/'+memLimit+'MB ('+memPct+'%)';
+        } else {
+          resources+='MEM: '+memUsed+'MB (no limit)';
+        }
       }
 
-      // Build deploy stats
-      var deployStats='U:'+s.updates_total+' R:'+s.rollbacks_total+'<br/>';
-      deployStats+='H:'+s.restarts_total+' F:'+s.failures_total;
+      // Build deploy stats with null safety
+      var deployStats='U:'+(s.updates_total||0)+' R:'+(s.rollbacks_total||0)+'<br/>';
+      deployStats+='H:'+(s.restarts_total||0)+' F:'+(s.failures_total||0);
 
       rows+='<tr>'+
         '<td>'+nameCell+'</td>'+
