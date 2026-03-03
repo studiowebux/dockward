@@ -48,6 +48,35 @@ func validateServiceName(name string) string {
 	return name
 }
 
+// HTTP request limits
+const (
+	maxRequestBodySize = 1 << 20  // 1 MB
+	defaultTimeout     = 30 * time.Second
+	sseTimeout        = 0  // No timeout for SSE connections
+)
+
+// limitRequestBody wraps an HTTP handler to enforce max request body size.
+// Returns 413 Request Entity Too Large if body exceeds limit.
+func limitRequestBody(h http.HandlerFunc, maxBytes int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		h(w, r)
+	}
+}
+
+// withTimeout wraps an HTTP handler with a timeout context.
+// If timeout is 0, no timeout is applied (for SSE endpoints).
+func withTimeout(h http.HandlerFunc, timeout time.Duration) http.HandlerFunc {
+	if timeout == 0 {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		h(w, r.WithContext(ctx))
+	}
+}
+
 // broadcaster adapts hub.Hub to the audit.Broadcaster interface.
 // Pattern: adapter.
 type broadcaster struct {
@@ -77,31 +106,39 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 		audit:   al,
 		hub:     h,
 		server: &http.Server{
-			Addr:         address + ":" + port,
-			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 30 * time.Second,
+			Addr:              address + ":" + port,
+			Handler:           mux,
+			ReadTimeout:       10 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    1 << 20, // 1 MB
 		},
 	}
 
-	mux.HandleFunc("/trigger", api.handleTriggerAll)
-	mux.HandleFunc("/trigger/", api.handleTriggerService)
-	mux.HandleFunc("/blocked", api.handleListBlocked)
-	mux.HandleFunc("/blocked/", api.handleUnblockService)
-	mux.HandleFunc("/not-found", api.handleListNotFound)
-	mux.HandleFunc("/errored", api.handleListErrored)
-	mux.HandleFunc("/status", api.handleStatusAll)
-	mux.HandleFunc("/status/", api.handleStatusService)
-	mux.HandleFunc("/health", api.handleHealth)
-	mux.HandleFunc("/metrics", api.handleMetrics)
-	mux.HandleFunc("/audit", api.handleAudit)
-	mux.HandleFunc("/ui", api.handleUI)
-	mux.HandleFunc("/ui/events", api.handleUIEvents)
-	mux.HandleFunc("/ui/stream", api.handleUIStream)
-	mux.HandleFunc("/ui/v2", api.handleUIDataStar)
-	mux.HandleFunc("/unblock/", api.handleUnblockPost)
-	mux.HandleFunc("/redeploy/", api.handleForceRedeploy)
-	mux.HandleFunc("/command-preview/", api.handleCommandPreview)
+	// POST endpoints with request body limits and timeouts
+	mux.HandleFunc("/trigger", limitRequestBody(withTimeout(api.handleTriggerAll, defaultTimeout), maxRequestBodySize))
+	mux.HandleFunc("/trigger/", limitRequestBody(withTimeout(api.handleTriggerService, defaultTimeout), maxRequestBodySize))
+	mux.HandleFunc("/unblock/", limitRequestBody(withTimeout(api.handleUnblockPost, defaultTimeout), maxRequestBodySize))
+	mux.HandleFunc("/redeploy/", limitRequestBody(withTimeout(api.handleForceRedeploy, defaultTimeout), maxRequestBodySize))
+
+	// GET endpoints with timeouts (no body limits needed)
+	mux.HandleFunc("/blocked", withTimeout(api.handleListBlocked, defaultTimeout))
+	mux.HandleFunc("/blocked/", withTimeout(api.handleUnblockService, defaultTimeout))
+	mux.HandleFunc("/not-found", withTimeout(api.handleListNotFound, defaultTimeout))
+	mux.HandleFunc("/errored", withTimeout(api.handleListErrored, defaultTimeout))
+	mux.HandleFunc("/status", withTimeout(api.handleStatusAll, defaultTimeout))
+	mux.HandleFunc("/status/", withTimeout(api.handleStatusService, defaultTimeout))
+	mux.HandleFunc("/health", withTimeout(api.handleHealth, defaultTimeout))
+	mux.HandleFunc("/metrics", withTimeout(api.handleMetrics, defaultTimeout))
+	mux.HandleFunc("/audit", withTimeout(api.handleAudit, defaultTimeout))
+	mux.HandleFunc("/ui", withTimeout(api.handleUI, defaultTimeout))
+	mux.HandleFunc("/ui/v2", withTimeout(api.handleUIDataStar, defaultTimeout))
+	mux.HandleFunc("/command-preview/", withTimeout(api.handleCommandPreview, defaultTimeout))
+
+	// SSE endpoints - no timeout (long-lived connections)
+	mux.HandleFunc("/ui/events", withTimeout(api.handleUIEvents, sseTimeout))
+	mux.HandleFunc("/ui/stream", withTimeout(api.handleUIStream, sseTimeout))
 
 	return api
 }
