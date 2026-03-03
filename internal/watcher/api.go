@@ -711,7 +711,7 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
 
 <h2>Services</h2>
 <table>
-<thead><tr><th>Name</th><th>Status</th><th>Next Check</th><th>Image</th><th>Digest</th><th>CPU / Mem</th><th>Updates</th><th>Rollbacks</th><th>Restarts</th><th>Actions</th></tr></thead>
+<thead><tr><th>Name</th><th>Status</th><th>Config</th><th>Next Check</th><th>Health</th><th>Image</th><th>Resources</th><th>Deploy Stats</th><th>Actions</th></tr></thead>
 <tbody id="status-body">
 {{range .Services}}
 <tr>
@@ -728,21 +728,42 @@ button:hover{background:var(--btn-hover-bg);color:var(--btn-hover-text)}
     </details>
     {{end}}
   </td>
-  <td class="{{.Status}}">{{.Status}}</td>
+  <td class="{{.Status}}">
+    {{.Status}}
+    {{if .Errored}}<span title="{{.Errored}}" style="cursor:help"> ⚠️</span>{{end}}
+  </td>
+  <td style="font-size:11px">
+    {{if .AutoUpdate}}<span style="color:var(--success)" title="Auto-update enabled">U</span>{{else}}<span style="color:var(--text-dim)">-</span>{{end}}
+    {{if .AutoHeal}}<span style="color:var(--success)" title="Auto-heal enabled">H</span>{{else}}<span style="color:var(--text-dim)">-</span>{{end}}
+    {{if .AutoStart}}<span style="color:var(--success)" title="Auto-start enabled">S</span>{{else}}<span style="color:var(--text-dim)">-</span>{{end}}
+  </td>
   <td style="color:var(--text-muted);font-size:11px">
     {{if .NextCheck}}
       <span title="Next check at {{.NextCheck.Format "15:04:05"}}">{{.NextCheck.Sub $.Now | formatDuration}}</span>
     {{else}}--{{end}}
     {{if eq .CheckStatus "checking"}}
-      <span style="color:var(--warning)"> (checking...)</span>
+      <span style="color:var(--warning)"> ⏳</span>
     {{end}}
   </td>
-  <td style="color:var(--text-muted)">{{if .Image}}{{.Image}}{{else}}--{{end}}</td>
-  <td style="color:var(--text-muted)">{{if .ImageDigest}}{{.ImageDigest}}{{else}}--{{end}}</td>
-  <td>{{if .HasStats}}{{printf "%.0f" .CPUPercent}}% / {{printf "%.0f" .MemoryPercent}}%{{else}}--{{end}}</td>
-  <td>{{.UpdatesTotal}}</td>
-  <td>{{.RollbacksTotal}}</td>
-  <td>{{.RestartsTotal}}</td>
+  <td style="font-size:11px">
+    {{if eq .Healthy true}}<span style="color:var(--success)">✓</span>
+    {{else if eq .Healthy false}}<span style="color:var(--error)">✗</span>
+    {{else}}<span style="color:var(--text-dim)">?</span>{{end}}
+  </td>
+  <td style="color:var(--text-muted);font-size:11px">
+    {{if .Image}}{{.Image}}<br/>{{end}}
+    {{if .ImageDigest}}<span style="color:var(--text-dim)">{{.ImageDigest}}</span>{{else}}--{{end}}
+  </td>
+  <td style="font-size:11px">
+    {{if .HasStats}}
+      CPU: {{printf "%.0f" .CPUPercent}}%<br/>
+      MEM: {{printf "%.0f" .MemoryUsageMB}}MB/{{printf "%.0f" .MemoryLimitMB}}MB ({{printf "%.0f" .MemoryPercent}}%)
+    {{else}}--{{end}}
+  </td>
+  <td style="font-size:11px">
+    U:{{.UpdatesTotal}} R:{{.RollbacksTotal}}<br/>
+    H:{{.RestartsTotal}} F:{{.FailuresTotal}}
+  </td>
   <td>
     <button onclick="triggerService('{{.Name}}')">Trigger</button>
     <button onclick="redeployService('{{.Name}}')">Redeploy</button>
