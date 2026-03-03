@@ -180,14 +180,36 @@ Array of service definitions. Each service is independent — fields used depend
 
 ## Validation Rules
 
-:::danger
-Validation failures at startup cause dockward to exit with a non-zero status. Check `journalctl -u dockward` for the error message.
-:::
+### Global Validation (Fatal)
 
+These validation errors cause dockward to exit immediately:
+
+- `runtime` must be `"docker"` or `"podman"`
+- `api.port` must be a valid port number (1-65535)
+- `registry.poll_interval` must be 10-86400 seconds
+- `docker_health.check_interval` must be 5-3600 seconds
+- `docker_health.timeout` must be 1-30 seconds and less than `check_interval`
+
+### Service Validation (Non-Fatal)
+
+**As of v1.0.0-alpha.9:** Service-level validation errors are **non-fatal**. Invalid services are logged as warnings and excluded from monitoring, while valid services continue operating normally.
+
+Invalid services trigger warnings like:
+```
+[config] WARNING: 1 service(s) failed validation and will be skipped:
+  - service[18] "otel-collector": compose_file[0] not found: "/srv/observability/docker-compose.yml"
+```
+
+Service validation rules:
 - `auto_update: true` requires at least one entry in `images`, at least one entry in `compose_files`, and `compose_project`
 - `auto_heal: true` requires at least one of `compose_project` or `container_name` for Docker event matching
-- `name` must be unique across all service definitions
+- `compose_files` paths must be absolute, must exist, and must be regular files (no directories or symlinks)
+- `compose_project` must match pattern `^[a-zA-Z0-9_-]{1,64}$` (security: prevents command injection)
+- `env_file` path must be absolute and must exist if specified
+- Path traversal attempts (`..`) are forbidden in all file paths (security)
 - `silent: true` skips all validation rules for the service
+
+**Monitoring invalid services:** Use `GET /health` to see `config_warnings` array with reasons for each skipped service.
 
 ## Full Example
 

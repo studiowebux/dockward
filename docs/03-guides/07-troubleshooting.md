@@ -89,11 +89,44 @@ Only unblock manually if you have confirmed the current image in the registry is
 
 ---
 
+## Config validation warnings on startup
+
+**Symptom:** Dockward starts successfully but logs warnings like:
+
+```
+[config] WARNING: 1 service(s) failed validation and will be skipped:
+  - service[18] "otel-collector": compose_file[0] not found: "/srv/observability/docker-compose.yml"
+```
+
+**Cause:** One or more services have invalid configuration (missing files, invalid paths, etc.).
+
+**Impact:** **The invalid service(s) are skipped and not monitored.** Valid services continue operating normally.
+
+**Fix:**
+
+1. Check the warning message for the specific reason
+2. Fix the configuration issue:
+   - Ensure compose files exist at the specified paths
+   - Verify paths are absolute (not relative)
+   - Check file permissions
+3. Restart dockward: `sudo systemctl restart dockward`
+4. Verify no warnings: `journalctl -u dockward -n 50`
+
+**Monitoring:** Check `GET /health` endpoint - it includes a `config_warnings` array listing all skipped services:
+
+```sh
+curl -s http://localhost:9090/health | jq .config_warnings
+```
+
+**Note:** As of v1.0.0-alpha.9, service-level validation errors are non-fatal. Only global errors (invalid runtime) cause startup failure.
+
+---
+
 ## Systemd service will not start
 
 **Symptom:** `systemctl status dockward` shows `failed` immediately.
 
-**Cause:** Config file parse error or validation failure.
+**Cause:** Config file parse error or **global** validation failure.
 
 **Fix:** Run dockward directly to see the error:
 
@@ -103,8 +136,11 @@ Only unblock manually if you have confirmed the current image in the registry is
 
 Common causes:
 - JSON syntax error (trailing comma, missing brace)
-- `auto_update: true` without `images`, `compose_files`, or `compose_project`
-- `auto_heal: true` without `compose_project` or `container_name`
+- Invalid `runtime` (must be `"docker"` or `"podman"`)
+- Invalid `api.port` (must be 1-65535)
+- Invalid global settings (poll_interval, docker_health timing)
+
+**Note:** Service-level errors (missing compose files, invalid service config) no longer cause startup failure - they are logged as warnings instead.
 
 ---
 

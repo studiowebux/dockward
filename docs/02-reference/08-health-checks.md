@@ -95,9 +95,14 @@ The `/health` endpoint returns Docker daemon status:
       "docker_version": "Docker/24.0.7 (linux)",
       "api_version": "1.45"
     }
-  }
+  },
+  "config_warnings": [
+    "service[18] \"otel-collector\": compose_file[0] not found: \"/srv/observability/docker-compose.yml\""
+  ]
 }
 ```
+
+**Note:** The `config_warnings` field appears only when services failed validation during config load. These services are skipped and not monitored.
 
 ### Unhealthy Response (503 Service Unavailable)
 

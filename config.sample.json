@@ -11,6 +11,10 @@
   "monitor": {
     "stats_interval": 30
   },
+  "docker_health": {
+    "check_interval": 30,
+    "timeout": 5
+  },
   "audit": {
     "path": "/var/log/dockward/audit.jsonl"
   },
