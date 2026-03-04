@@ -100,7 +100,7 @@ Watch and restart any container without a registry or compose setup:
     "stats_interval": 30
   },
   "api": {
-    "port": "9090"
+    "address": ["127.0.0.1:9090"]
   },
   "services": [
     {

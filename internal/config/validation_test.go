@@ -27,7 +27,7 @@ func TestConfigValidation_Runtime(t *testing.T) {
 					PollInterval: 300,
 				},
 				API: API{
-					Port: "9090",
+					Address: []string{"127.0.0.1:9090"},
 				},
 			}
 
@@ -72,7 +72,7 @@ func TestConfigValidation_ProjectName(t *testing.T) {
 					PollInterval: 300,
 				},
 				API: API{
-					Port: "9090",
+					Address: []string{"127.0.0.1:9090"},
 				},
 				Services: []Service{
 					{
@@ -150,7 +150,7 @@ func TestConfigValidation_ComposePaths(t *testing.T) {
 					PollInterval: 300,
 				},
 				API: API{
-					Port: "9090",
+					Address: []string{"127.0.0.1:9090"},
 				},
 				Services: []Service{
 					{
@@ -226,7 +226,7 @@ func TestConfigValidation_EnvFile(t *testing.T) {
 					PollInterval: 300,
 				},
 				API: API{
-					Port: "9090",
+					Address: []string{"127.0.0.1:9090"},
 				},
 				Services: []Service{
 					{
@@ -287,7 +287,7 @@ func TestConfigLoad_MaliciousConfig(t *testing.T) {
 			configJSON: `{
 				"runtime": "docker",
 				"registry": {"url": "http://localhost:5000", "poll_interval": 300},
-				"api": {"port": "9090"},
+				"api": {"address": ["127.0.0.1:9090"]},
 				"services": [{
 					"name": "test",
 					"compose_project": "project;rm -rf /",
@@ -304,7 +304,7 @@ func TestConfigLoad_MaliciousConfig(t *testing.T) {
 			configJSON: `{
 				"runtime": "docker",
 				"registry": {"url": "http://localhost:5000", "poll_interval": 300},
-				"api": {"port": "9090"},
+				"api": {"address": ["127.0.0.1:9090"]},
 				"services": [{
 					"name": "test",
 					"compose_project": "test",
@@ -321,7 +321,7 @@ func TestConfigLoad_MaliciousConfig(t *testing.T) {
 			configJSON: `{
 				"runtime": "runc",
 				"registry": {"url": "http://localhost:5000", "poll_interval": 300},
-				"api": {"port": "9090"}
+				"api": {"address": ["127.0.0.1:9090"]}
 			}`,
 			wantErr:     true,
 			errContains: "runtime must be 'docker' or 'podman'",

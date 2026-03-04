@@ -34,7 +34,7 @@ For configuration fields see [Config Reference](../02-reference/01-config.md). F
     "stats_interval": 30
   },
   "api": {
-    "port": "9090"
+    "address": ["127.0.0.1:9090"]
   },
   "audit": {
     "path": "/var/log/dockward/audit.jsonl"

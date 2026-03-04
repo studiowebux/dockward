@@ -72,7 +72,7 @@ sudo tee /etc/dockward/config.json > /dev/null <<'EOF'
     "poll_interval": 300
   },
   "api": {
-    "port": "9090"
+    "address": ["127.0.0.1:9090"]
   },
   "services": [
     {

@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -48,8 +49,7 @@ type Audit struct {
 
 // API defines the trigger/metrics HTTP server.
 type API struct {
-	Port    string `json:"port"`    // default: 9090
-	Address string `json:"address"` // default: 127.0.0.1
+	Address []string `json:"address"` // e.g. ["127.0.0.1:9090"]; default: ["127.0.0.1:9090"]
 }
 
 // Registry defines the local Docker registry connection.
@@ -180,11 +180,8 @@ func (c *Config) setDefaults() {
 	if c.DockerHealth.Timeout <= 0 {
 		c.DockerHealth.Timeout = 5
 	}
-	if c.API.Port == "" {
-		c.API.Port = "9090"
-	}
-	if c.API.Address == "" {
-		c.API.Address = "127.0.0.1"
+	if len(c.API.Address) == 0 {
+		c.API.Address = []string{"127.0.0.1:9090"}
 	}
 	for i := range c.Services {
 		if c.Services[i].HealthGrace <= 0 {
@@ -398,11 +395,27 @@ func (c *Config) validate() error {
 		return fmt.Errorf("docker_health.timeout (%ds) must be less than check_interval (%ds)", c.DockerHealth.Timeout, c.DockerHealth.CheckInterval)
 	}
 
-	// Validate API port
-	if c.API.Port != "" {
-		if port, err := strconv.Atoi(c.API.Port); err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("api.port must be a valid port number (1-65535), got %q", c.API.Port)
+	// Validate API addresses
+	if len(c.API.Address) == 0 {
+		return fmt.Errorf("api.address must contain at least one listen address")
+	}
+	seen := make(map[string]bool, len(c.API.Address))
+	for i, addr := range c.API.Address {
+		host, portStr, err := net.SplitHostPort(addr)
+		if err != nil {
+			return fmt.Errorf("api.address[%d] %q is not valid host:port: %v", i, addr, err)
 		}
+		if host != "" && net.ParseIP(host) == nil {
+			return fmt.Errorf("api.address[%d] %q has invalid IP address %q", i, addr, host)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("api.address[%d] %q has invalid port (must be 1-65535)", i, addr)
+		}
+		if seen[addr] {
+			return fmt.Errorf("api.address[%d] %q is a duplicate", i, addr)
+		}
+		seen[addr] = true
 	}
 
 	return nil

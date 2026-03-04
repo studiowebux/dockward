@@ -48,7 +48,7 @@ Poll a local registry, auto-deploy on image change, and auto-heal:
     "stats_interval": 30
   },
   "api": {
-    "port": "9090"
+    "address": ["127.0.0.1:9090"]
   },
   "services": [
     {

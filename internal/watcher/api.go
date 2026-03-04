@@ -21,7 +21,6 @@ import (
 )
 
 // API exposes HTTP endpoints for triggering updates, health, and metrics.
-// Listens on localhost only.
 type API struct {
 	updater        *Updater
 	healer         *Healer
@@ -31,8 +30,7 @@ type API struct {
 	hub            *hub.Hub
 	dockerHealth   *docker.HealthChecker
 	configWarnings []string // Invalid services from config validation
-	server         *http.Server
-	httpServer     *http.Server // For graceful shutdown
+	servers        []*http.Server // one per listen address, all share the same mux
 
 	// statusMu guards statusSubs — the set of channels notified when service
 	// state changes (audit entry written → status should be re-pushed to SSE).
@@ -136,13 +134,29 @@ func (b *broadcaster) Broadcast(e audit.Entry) {
 	}
 }
 
-// NewAPI creates the trigger/metrics API on the given address and port.
-func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, configWarnings []string, address string, port string) *API {
+// NewAPI creates the trigger/metrics API on the given addresses.
+// Each address is a "host:port" string; one http.Server is created per address,
+// all sharing the same handler mux.
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, configWarnings []string, addresses []string) *API {
 	h := hub.NewHub()
 	bc := &broadcaster{hub: h}
 	al.WithBroadcast(bc)
 
 	mux := http.NewServeMux()
+
+	servers := make([]*http.Server, len(addresses))
+	for i, addr := range addresses {
+		servers[i] = &http.Server{
+			Addr:              addr,
+			Handler:           mux,
+			ReadTimeout:       10 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    1 << 20, // 1 MB
+		}
+	}
+
 	api := &API{
 		updater:        updater,
 		healer:         healer,
@@ -153,15 +167,7 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 		configWarnings: configWarnings,
 		hub:            h,
 		statusSubs:     make(map[chan struct{}]struct{}),
-		server: &http.Server{
-			Addr:              address + ":" + port,
-			Handler:           mux,
-			ReadTimeout:       10 * time.Second,
-			ReadHeaderTimeout: 5 * time.Second,
-			WriteTimeout:      30 * time.Second,
-			IdleTimeout:       120 * time.Second,
-			MaxHeaderBytes:    1 << 20, // 1 MB
-		},
+		servers:        servers,
 	}
 
 	// Wire status-refresh notification: every audit broadcast triggers an
@@ -194,24 +200,34 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 	return api
 }
 
-// Run starts the HTTP server. Blocks until ctx is cancelled.
+// Run starts all HTTP servers. Blocks until ctx is cancelled.
 func (a *API) Run(ctx context.Context) {
-	// Store the server reference for graceful shutdown
-	a.httpServer = a.server
-
+	// Fallback: forcefully close all servers if graceful shutdown doesn't finish.
 	saferun.Go("api-shutdown", func() {
 		<-ctx.Done()
-		// Graceful shutdown is now handled by the Shutdown() method
-		// This is just a fallback for forceful close if needed
-		time.Sleep(35 * time.Second) // Wait longer than graceful shutdown timeout
-		if err := a.server.Close(); err != nil {
-			logger.Printf("[api] server close error: %v", err)
+		time.Sleep(35 * time.Second)
+		for _, srv := range a.servers {
+			if err := srv.Close(); err != nil {
+				logger.Printf("[api] server close error (%s): %v", srv.Addr, err)
+			}
 		}
 	})
 
-	logger.Printf("[api] listening on %s", a.server.Addr)
-	if err := a.server.ListenAndServe(); err != http.ErrServerClosed {
-		logger.Printf("[api] server error: %v", err)
+	// Launch a listener goroutine for every address after the first.
+	for i := 1; i < len(a.servers); i++ {
+		srv := a.servers[i]
+		saferun.Go("api-listen-"+srv.Addr, func() {
+			logger.Printf("[api] listening on %s", srv.Addr)
+			if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+				logger.Printf("[api] server error (%s): %v", srv.Addr, err)
+			}
+		})
+	}
+
+	// Block on the first server in the calling goroutine (keeps Run blocking).
+	logger.Printf("[api] listening on %s", a.servers[0].Addr)
+	if err := a.servers[0].ListenAndServe(); err != http.ErrServerClosed {
+		logger.Printf("[api] server error (%s): %v", a.servers[0].Addr, err)
 	}
 }
 
@@ -1394,15 +1410,16 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.Printf("[api] force redeploy: %s", svc.Name)
+	svcCopy := *svc // copy for goroutine safety
 	saferun.Go("force-redeploy-"+svc.Name, func() {
 		ctx := context.Background()
-		a.updater.tryStartDeploy(svc.Name)
-		defer a.updater.clearDeploying(svc.Name)
-		composeOut, err := compose.Up(ctx, a.updater.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+		a.updater.tryStartDeploy(svcCopy.Name)
+		composeOut, err := compose.Up(ctx, a.updater.cfg.Runtime, svcCopy.ComposeFiles, svcCopy.ComposeProject, svcCopy.EnvFile)
 		if err != nil {
-			logger.Printf("[api] ERROR: force redeploy failed for %s: %v", svc.Name, err)
+			a.updater.clearDeploying(svcCopy.Name)
+			logger.Printf("[api] ERROR: force redeploy failed for %s: %v", svcCopy.Name, err)
 			if werr := a.audit.Write(audit.Entry{
-				Service: svc.Name,
+				Service: svcCopy.Name,
 				Event:   "force_redeploy_failed",
 				Message: fmt.Sprintf("Force redeploy failed: %v", err),
 				Level:   "error",
@@ -1414,7 +1431,7 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if werr := a.audit.Write(audit.Entry{
-			Service: svc.Name,
+			Service: svcCopy.Name,
 			Event:   "force_redeploy",
 			Message: "Forced redeploy via API",
 			Level:   "info",
@@ -1422,6 +1439,8 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 		}); werr != nil {
 			logger.Printf("[api] ERROR: audit write error: %v", werr)
 		}
+
+		go a.updater.verifyHealthAfterCompose(ctx, svcCopy) // clears deploying when done
 	})
 
 	writeJSON(w, map[string]string{"status": "redeploying", "service": serviceName})

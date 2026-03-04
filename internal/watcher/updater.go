@@ -299,9 +299,9 @@ func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) err
 
 	logger.Printf("[updater] %s: compose file changed, redeploying", svc.Name)
 	u.tryStartDeploy(svc.Name)
-	defer u.clearDeploying(svc.Name)
 	composeOut, err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
 	if err != nil {
+		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose up (drift): %w", err)
 	}
 
@@ -322,6 +322,7 @@ func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) err
 		Level:   notify.LevelInfo,
 	})
 
+	go u.verifyHealthAfterCompose(ctx, svc) // clears deploying when done
 	return nil
 }
 
@@ -596,12 +597,12 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service, manual
 		u.startAttemptedMu.Unlock()
 
 		u.tryStartDeploy(svc.Name)
-		defer u.clearDeploying(svc.Name)
 		switch status {
 		case containerStuck:
 			logger.Printf("[updater] %s: containers stuck (created/restarting), forcing down+up", svc.Name)
 			composeOut, err := compose.Restart(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
 			if err != nil {
+				u.clearDeploying(svc.Name)
 				return fmt.Errorf("compose restart (stuck containers): %w", err)
 			}
 			u.dispatcher.Send(ctx, notify.Alert{
@@ -623,6 +624,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service, manual
 			logger.Printf("[updater] %s: images up to date but no containers, starting compose project", svc.Name)
 			composeOut, err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
 			if err != nil {
+				u.clearDeploying(svc.Name)
 				return fmt.Errorf("compose up (no running container): %w", err)
 			}
 			u.dispatcher.Send(ctx, notify.Alert{
@@ -642,6 +644,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service, manual
 			}
 		}
 		u.clearPollError(svc)
+		go u.verifyHealthAfterCompose(ctx, svc) // clears deploying when done
 		return nil
 	}
 
@@ -823,6 +826,82 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 				return
 			}
 			// Keep polling.
+		}
+	}
+}
+
+// verifyHealthAfterCompose polls container state after a non-image-update
+// compose operation (drift, auto-start, stuck restart) and sets the health
+// gauge based on actual container health.  No rollback — there are no old
+// images to restore.
+func (u *Updater) verifyHealthAfterCompose(ctx context.Context, svc config.Service) {
+	defer u.clearDeploying(svc.Name)
+
+	grace := time.Duration(svc.HealthGrace) * time.Second
+	deadline := time.Now().Add(grace)
+	logger.Printf("[updater] %s: verifying health for %s", svc.Name, grace)
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		container, cStatus := u.findContainerByProject(ctx, svc.ComposeProject)
+		if cStatus == containerNone {
+			if time.Now().After(deadline) {
+				logger.Printf("[updater] %s: no container found after grace period", svc.Name)
+				u.metrics.SetHealthy(svc.Name, false)
+				return
+			}
+			continue
+		}
+
+		info, err := u.docker.InspectContainer(ctx, container.ID)
+		if err != nil {
+			if time.Now().After(deadline) {
+				logger.Printf("[updater] %s: inspect failed after grace: %v", svc.Name, err)
+				u.metrics.SetHealthy(svc.Name, false)
+				return
+			}
+			continue
+		}
+
+		// No healthcheck: running = healthy.
+		if info.State.Health == nil {
+			if info.State.Running {
+				logger.Printf("[updater] %s: running (no healthcheck), marking healthy", svc.Name)
+				u.metrics.SetHealthy(svc.Name, true)
+				return
+			}
+			if time.Now().After(deadline) {
+				logger.Printf("[updater] %s: not running after grace period", svc.Name)
+				u.metrics.SetHealthy(svc.Name, false)
+				return
+			}
+			continue
+		}
+
+		// Has healthcheck: respect Docker's health status.
+		switch info.State.Health.Status {
+		case "healthy":
+			logger.Printf("[updater] %s: healthy after compose operation", svc.Name)
+			u.metrics.SetHealthy(svc.Name, true)
+			return
+		case "unhealthy":
+			logger.Printf("[updater] %s: unhealthy after compose operation", svc.Name)
+			u.metrics.SetHealthy(svc.Name, false)
+			return
+		default: // "starting" etc.
+			if time.Now().After(deadline) {
+				logger.Printf("[updater] %s: still %s after grace period", svc.Name, info.State.Health.Status)
+				u.metrics.SetHealthy(svc.Name, false)
+				return
+			}
 		}
 	}
 }

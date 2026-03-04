@@ -81,10 +81,18 @@ func editRegistry(s *bufio.Scanner, r *config.Registry) error {
 func editAPI(s *bufio.Scanner, a *config.API) error {
 	fmt.Println("[API]")
 
-	if a.Port == "" {
-		a.Port = "9090"
+	current := "127.0.0.1:9090"
+	if len(a.Address) > 0 {
+		current = strings.Join(a.Address, ", ")
 	}
-	a.Port = prompt(s, fmt.Sprintf("  Port [%s]: ", a.Port), a.Port)
+	raw := prompt(s, fmt.Sprintf("  Listen addresses (comma-separated host:port) [%s]: ", current), current)
+	parts := strings.Split(raw, ",")
+	a.Address = a.Address[:0]
+	for _, p := range parts {
+		if addr := strings.TrimSpace(p); addr != "" {
+			a.Address = append(a.Address, addr)
+		}
+	}
 
 	fmt.Println()
 	return nil

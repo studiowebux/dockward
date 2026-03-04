@@ -104,22 +104,32 @@ See [Docker Daemon Health Checks](./08-health-checks.md) for details.
 
 ## `api`
 
-Controls the HTTP API server.
+Controls the HTTP API server. Supports multiple listen addresses.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `address` | string | `"127.0.0.1"` | Bind address for the API server. Use `"0.0.0.0"` to expose externally (not recommended without authentication) |
-| `port` | string | `"9090"` | Port for the API and metrics server |
+| `address` | string[] | `["127.0.0.1:9090"]` | List of `host:port` addresses to listen on. Multiple entries start one HTTP server per address, all sharing the same handler |
 
 ```json
 "api": {
-  "address": "127.0.0.1",
-  "port": "9090"
+  "address": ["127.0.0.1:9090"]
+}
+```
+
+Multiple addresses (e.g. localhost + LAN):
+
+```json
+"api": {
+  "address": ["127.0.0.1:9090", "10.0.0.5:9090"]
 }
 ```
 
 :::warning
-Setting `address: "0.0.0.0"` exposes the API to your network. The API has **no authentication** - only do this on trusted networks or behind a reverse proxy with auth.
+Using `"0.0.0.0:9090"` exposes the API to your network. The API has **no authentication** — only do this on trusted networks or behind a reverse proxy with auth.
+:::
+
+:::caution BREAKING CHANGE (v1.0.0)
+`api.address` changed from a single string to an array of `host:port` strings. The separate `api.port` field was removed. Migrate by combining the old address and port: `"address": "127.0.0.1"` + `"port": "9090"` becomes `"address": ["127.0.0.1:9090"]`.
 :::
 
 ## `audit`
@@ -263,8 +273,7 @@ Service validation rules:
     "timeout": 5
   },
   "api": {
-    "address": "127.0.0.1",
-    "port": "9090"
+    "address": ["127.0.0.1:9090"]
   },
   "audit": {
     "path": "/var/log/dockward/audit.jsonl"
