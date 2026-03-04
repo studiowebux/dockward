@@ -13,41 +13,46 @@ import (
 
 // Pull runs "<runtime> compose -p <project> -f <file>... pull" for the given compose files.
 // The runtime parameter should be "docker" or "podman".
-func Pull(ctx context.Context, runtime string, composeFiles []string, project string, envFile string) error {
+// Returns the combined stdout+stderr output and any error.
+func Pull(ctx context.Context, runtime string, composeFiles []string, project string, envFile string) (string, error) {
 	return run(ctx, runtime, composeFiles, project, envFile, "pull")
 }
 
 // Up runs "<runtime> compose -p <project> -f <file>... up -d" for the given compose files.
 // The runtime parameter should be "docker" or "podman".
-func Up(ctx context.Context, runtime string, composeFiles []string, project string, envFile string) error {
+// Returns the combined stdout+stderr output and any error.
+func Up(ctx context.Context, runtime string, composeFiles []string, project string, envFile string) (string, error) {
 	return run(ctx, runtime, composeFiles, project, envFile, "up", "-d")
 }
 
 // Restart runs "<runtime> compose down" followed by "<runtime> compose up -d".
 // Used to recover stuck containers (created/restarting state).
 // The runtime parameter should be "docker" or "podman".
-func Restart(ctx context.Context, runtime string, composeFiles []string, project string, envFile string) error {
-	if err := run(ctx, runtime, composeFiles, project, envFile, "down"); err != nil {
-		return err
+// Returns the combined output of both commands and any error.
+func Restart(ctx context.Context, runtime string, composeFiles []string, project string, envFile string) (string, error) {
+	downOut, err := run(ctx, runtime, composeFiles, project, envFile, "down")
+	if err != nil {
+		return downOut, err
 	}
-	return run(ctx, runtime, composeFiles, project, envFile, "up", "-d")
+	upOut, err := run(ctx, runtime, composeFiles, project, envFile, "up", "-d")
+	return downOut + upOut, err
 }
 
-func run(ctx context.Context, runtime string, composeFiles []string, project string, envFile string, args ...string) error {
+func run(ctx context.Context, runtime string, composeFiles []string, project string, envFile string, args ...string) (string, error) {
 	// Validate runtime is either docker or podman
 	if runtime != "docker" && runtime != "podman" {
-		return fmt.Errorf("invalid runtime: must be 'docker' or 'podman', got %q", runtime)
+		return "", fmt.Errorf("invalid runtime: must be 'docker' or 'podman', got %q", runtime)
 	}
 
 	// Validate inputs to prevent command injection
 	if err := validateProjectName(project); err != nil {
-		return fmt.Errorf("invalid project name: %w", err)
+		return "", fmt.Errorf("invalid project name: %w", err)
 	}
 	if err := validateComposeFiles(composeFiles); err != nil {
-		return fmt.Errorf("invalid compose files: %w", err)
+		return "", fmt.Errorf("invalid compose files: %w", err)
 	}
 	if err := validateEnvFilePath(envFile); err != nil {
-		return fmt.Errorf("invalid env file: %w", err)
+		return "", fmt.Errorf("invalid env file: %w", err)
 	}
 
 	cmdArgs := []string{"compose", "-p", project}
@@ -66,16 +71,22 @@ func run(ctx context.Context, runtime string, composeFiles []string, project str
 	if envFile != "" {
 		extra, err := loadEnvFile(envFile)
 		if err != nil {
-			return fmt.Errorf("load env_file %s: %w", envFile, err)
+			return "", fmt.Errorf("load env_file %s: %w", envFile, err)
 		}
 		cmd.Env = append(cmd.Env, extra...)
 	}
 
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("docker compose %s: %w\noutput: %s", args[0], err, string(output))
+	out := strings.TrimSpace(string(output))
+	if out != "" {
+		for _, line := range strings.Split(out, "\n") {
+			logger.Printf("[compose] %s", line)
+		}
 	}
-	return nil
+	if err != nil {
+		return out, fmt.Errorf("docker compose %s: %w\noutput: %s", args[0], err, out)
+	}
+	return out, nil
 }
 
 // loadEnvFile reads a .env file and returns KEY=VALUE strings.

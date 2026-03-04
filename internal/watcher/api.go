@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/studiowebux/dockward/internal/audit"
@@ -32,6 +33,43 @@ type API struct {
 	configWarnings []string // Invalid services from config validation
 	server         *http.Server
 	httpServer     *http.Server // For graceful shutdown
+
+	// statusMu guards statusSubs — the set of channels notified when service
+	// state changes (audit entry written → status should be re-pushed to SSE).
+	statusMu   sync.Mutex
+	statusSubs map[chan struct{}]struct{}
+}
+
+// subscribeStatus returns a channel that receives a signal whenever service
+// state changes and the UI should refresh.  Buffer of 1 so the broadcaster
+// never blocks.
+func (a *API) subscribeStatus() chan struct{} {
+	ch := make(chan struct{}, 1)
+	a.statusMu.Lock()
+	if a.statusSubs == nil {
+		a.statusSubs = make(map[chan struct{}]struct{})
+	}
+	a.statusSubs[ch] = struct{}{}
+	a.statusMu.Unlock()
+	return ch
+}
+
+func (a *API) unsubscribeStatus(ch chan struct{}) {
+	a.statusMu.Lock()
+	delete(a.statusSubs, ch)
+	a.statusMu.Unlock()
+}
+
+// notifyStatus signals all SSE clients that service state changed.
+func (a *API) notifyStatus() {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	for ch := range a.statusSubs {
+		select {
+		case ch <- struct{}{}:
+		default: // already pending, skip
+		}
+	}
 }
 
 var (
@@ -80,9 +118,10 @@ func withTimeout(h http.HandlerFunc, timeout time.Duration) http.HandlerFunc {
 }
 
 // broadcaster adapts hub.Hub to the audit.Broadcaster interface.
-// Pattern: adapter.
+// Pattern: adapter.  Also notifies SSE clients to refresh status.
 type broadcaster struct {
-	hub *hub.Hub
+	hub      *hub.Hub
+	onNotify func() // called after broadcast to trigger status push
 }
 
 func (b *broadcaster) Broadcast(e audit.Entry) {
@@ -92,12 +131,16 @@ func (b *broadcaster) Broadcast(e audit.Entry) {
 		return
 	}
 	b.hub.Broadcast(data)
+	if b.onNotify != nil {
+		b.onNotify()
+	}
 }
 
 // NewAPI creates the trigger/metrics API on the given address and port.
 func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, configWarnings []string, address string, port string) *API {
 	h := hub.NewHub()
-	al.WithBroadcast(&broadcaster{hub: h})
+	bc := &broadcaster{hub: h}
+	al.WithBroadcast(bc)
 
 	mux := http.NewServeMux()
 	api := &API{
@@ -109,6 +152,7 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 		dockerHealth:   dockerHealth,
 		configWarnings: configWarnings,
 		hub:            h,
+		statusSubs:     make(map[chan struct{}]struct{}),
 		server: &http.Server{
 			Addr:              address + ":" + port,
 			Handler:           mux,
@@ -119,6 +163,10 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 			MaxHeaderBytes:    1 << 20, // 1 MB
 		},
 	}
+
+	// Wire status-refresh notification: every audit broadcast triggers an
+	// immediate status push to all connected SSE clients.
+	bc.onNotify = api.notifyStatus
 
 	// POST endpoints with request body limits and timeouts
 	mux.HandleFunc("/trigger", limitRequestBody(withTimeout(api.handleTriggerAll, defaultTimeout), maxRequestBodySize))
@@ -190,6 +238,13 @@ func (a *API) handleTriggerAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.Printf("[api] manual trigger: all services")
+	if werr := a.audit.Write(audit.Entry{
+		Event:   "manual_trigger",
+		Message: "Manual update check requested for all services",
+		Level:   "info",
+	}); werr != nil {
+		logger.Printf("[api] ERROR: audit write error: %v", werr)
+	}
 	saferun.Go("trigger-all", func() {
 		a.updater.pollAll(context.Background())
 	})
@@ -235,9 +290,17 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 			}
 			found = true
 			logger.Printf("[api] manual trigger: %s", svc.Name)
+			if werr := a.audit.Write(audit.Entry{
+				Service: svc.Name,
+				Event:   "manual_trigger",
+				Message: "Manual update check requested",
+				Level:   "info",
+			}); werr != nil {
+				logger.Printf("[api] ERROR: audit write error: %v", werr)
+			}
 			saferun.Go("manual-trigger-"+svc.Name, func() {
 				ctx := context.Background()
-				if err := a.updater.checkAndUpdate(ctx, svc); err != nil {
+				if err := a.updater.checkAndUpdate(ctx, svc, true); err != nil {
 					// Use non-suppressing error handler for manual triggers
 					a.updater.handlePollErrorAlways(ctx, svc, err)
 				}
@@ -294,16 +357,34 @@ type statusResponse struct {
 }
 
 // ContainerInfo holds the live state of a single container for UI display.
+// MountInfo describes a single volume/bind mount on a container.
+type MountInfo struct {
+	Type        string `json:"type"`        // bind, volume, tmpfs
+	Name        string `json:"name,omitempty"` // volume name (empty for binds)
+	Source      string `json:"source"`      // host path
+	Destination string `json:"destination"` // container path
+	ReadOnly    bool   `json:"read_only"`
+}
+
+// ImageInfo describes a deployed image for a service.
+type ImageInfo struct {
+	Image  string `json:"image"`            // full image reference (e.g. localhost:5000/myapp:latest)
+	Digest string `json:"digest"`           // full digest (sha256:...)
+	Short  string `json:"short"`            // short digest for display (sha256:abcdef012)
+	SizeMB int64  `json:"size_mb,omitempty"` // uncompressed size in megabytes
+}
+
 type ContainerInfo struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name"`
-	State         string  `json:"state"`
-	Status        string  `json:"status"`
-	Image         string  `json:"image"`
-	CPUPercent    float64 `json:"cpu_percent,omitempty"`
-	MemoryPercent float64 `json:"memory_percent,omitempty"`
-	MemoryUsageMB float64 `json:"memory_usage_mb,omitempty"`
-	MemoryLimitMB float64 `json:"memory_limit_mb,omitempty"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	State         string      `json:"state"`
+	Status        string      `json:"status"`
+	Image         string      `json:"image"`
+	Mounts        []MountInfo `json:"mounts,omitempty"`
+	CPUPercent    float64     `json:"cpu_percent,omitempty"`
+	MemoryPercent float64     `json:"memory_percent,omitempty"`
+	MemoryUsageMB float64     `json:"memory_usage_mb,omitempty"`
+	MemoryLimitMB float64     `json:"memory_limit_mb,omitempty"`
 }
 
 // serviceStatus is the per-service state returned by /status and /status/<name>.
@@ -329,8 +410,7 @@ type serviceStatus struct {
 	RestartsTotal  int64 `json:"restarts_total"`
 	FailuresTotal  int64 `json:"failures_total"`
 	// Deployed image info — populated each poll cycle.
-	Image       string `json:"image,omitempty"`
-	ImageDigest string `json:"image_digest,omitempty"`
+	Images []ImageInfo `json:"images,omitempty"`
 	// Live containers for this compose project.
 	Containers []ContainerInfo `json:"containers,omitempty"`
 	// Resource usage — populated each monitor poll cycle for all running containers.
@@ -499,9 +579,13 @@ func (a *API) buildServiceStatus(svc config.Service, snap stateSnap) serviceStat
 	}
 	for k, d := range snap.deployed {
 		if strings.HasPrefix(k, prefix) {
-			s.Image      = d.Image
-			s.ImageDigest = shortDigest(d.Digest)
-			break
+			sizeMB := d.Size / (1024 * 1024)
+			s.Images = append(s.Images, ImageInfo{
+				Image:  d.Image,
+				Digest: d.Digest,
+				Short:  shortDigest(d.Digest),
+				SizeMB: sizeMB,
+			})
 		}
 	}
 	s.Containers = snap.containers[svc.Name]
@@ -558,6 +642,14 @@ func (a *API) handleUnblockService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if a.updater.UnblockService(serviceName) {
+		if werr := a.audit.Write(audit.Entry{
+			Service: serviceName,
+			Event:   "unblocked",
+			Message: "Service manually unblocked via API",
+			Level:   "info",
+		}); werr != nil {
+			logger.Printf("[api] ERROR: audit write error: %v", werr)
+		}
 		writeJSON(w, map[string]string{"status": "unblocked", "service": serviceName})
 	} else {
 		writeJSON(w, map[string]string{"status": "not_blocked", "service": serviceName})
@@ -617,7 +709,11 @@ func (a *API) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // GET /metrics - Prometheus-compatible metrics
 func (a *API) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	if _, err := w.Write([]byte(a.metrics.Prometheus())); err != nil {
+	out := a.metrics.Prometheus()
+	out += "# HELP watcher_active_deploys Number of services currently deploying\n"
+	out += "# TYPE watcher_active_deploys gauge\n"
+	out += fmt.Sprintf("watcher_active_deploys %d\n", a.updater.DeployingCount())
+	if _, err := w.Write([]byte(out)); err != nil {
 		logger.Printf("[api] metrics write error: %v", err)
 	}
 }
@@ -763,7 +859,16 @@ func (a *API) handleUnblockPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.updater.UnblockService(serviceName)
+	if a.updater.UnblockService(serviceName) {
+		if werr := a.audit.Write(audit.Entry{
+			Service: serviceName,
+			Event:   "unblocked",
+			Message: "Service manually unblocked via web UI",
+			Level:   "info",
+		}); werr != nil {
+			logger.Printf("[api] ERROR: audit write error: %v", werr)
+		}
+	}
 	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }
 
@@ -788,506 +893,469 @@ const dataStarHTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dockward - data-star UI</title>
-
-  <!-- data-star.dev -->
-  <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js"></script>
-  <script type="module">
-    // Initialize SSE connection after page load
-    window.addEventListener('load', function() {
-      // Get the data-star store from the container element
-      const container = document.querySelector('[data-store]')
-
-      // Fetch initial status
-      fetch('/status')
-        .then(r => r.json())
-        .then(data => {
-          // Initialize store with current data
-          container.setAttribute('data-store', JSON.stringify({
-            services: data.services || [],
-            events: [],
-            connectionStatus: 'connected',
-            uptime: data.uptime_seconds || 0,
-            lastUpdate: new Date().toISOString()
-          }))
-        })
-        .catch(err => {
-          console.error('Failed to fetch initial status:', err)
-        })
-
-      // Connect to SSE endpoint for real-time updates
-      const eventSource = new EventSource('/ui/stream')
-
-      // Handle status updates
-      eventSource.addEventListener('status', (e) => {
-        try {
-          const data = JSON.parse(e.data)
-          const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
-          currentStore.services = data.services || []
-          currentStore.uptime = data.uptime_seconds || 0
-          currentStore.lastUpdate = new Date().toISOString()
-          currentStore.connectionStatus = 'connected'
-          container.setAttribute('data-store', JSON.stringify(currentStore))
-        } catch (err) {
-          console.error('Failed to parse status update:', err)
-        }
-      })
-
-      // Handle audit events
-      eventSource.addEventListener('audit', (e) => {
-        try {
-          const event = JSON.parse(e.data)
-          const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
-          currentStore.events = [event, ...(currentStore.events || [])].slice(0, 50)
-          container.setAttribute('data-store', JSON.stringify(currentStore))
-        } catch (err) {
-          console.error('Failed to parse audit event:', err)
-        }
-      })
-
-      // Handle connection errors
-      eventSource.onerror = () => {
-        const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
-        currentStore.connectionStatus = 'error'
-        container.setAttribute('data-store', JSON.stringify(currentStore))
-      }
-
-      eventSource.onopen = () => {
-        const currentStore = JSON.parse(container.getAttribute('data-store') || '{}')
-        currentStore.connectionStatus = 'connected'
-        container.setAttribute('data-store', JSON.stringify(currentStore))
-      }
-    })
+  <title>Dockward</title>
+  <!-- Prevent flash: apply theme before paint -->
+  <script>
+    (function(){
+      var t = localStorage.getItem('dw-theme');
+      if (!t) t = window.matchMedia('(prefers-color-scheme:light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
   </script>
-
-  <!-- Minimal CSS -->
   <style>
-    :root {
-      --bg: #1a1a1a;
-      --surface: #2a2a2a;
-      --text: #e0e0e0;
-      --text-dim: #666;
+    :root, [data-theme="dark"] {
+      --bg: #0e0e0e;
+      --surface: #181818;
+      --surface2: #242424;
+      --border: #2a2a2a;
+      --text: #f0f0f0;
+      --text-dim: #b0b0b0;
+      --text-faint: #808080;
       --success: #4caf50;
-      --error: #f44336;
-      --warning: #ff9800;
-      --info: #2196f3;
+      --error: #ef5350;
+      --warning: #ffa726;
+      --info: #42a5f5;
     }
-
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
+    [data-theme="light"] {
+      --bg: #f5f5f5;
+      --surface: #fff;
+      --surface2: #e8e8e8;
+      --border: #c0c0c0;
+      --text: #111;
+      --text-dim: #444;
+      --text-faint: #666;
+      --success: #2e7d32;
+      --error: #c62828;
+      --warning: #e65100;
+      --info: #1565c0;
     }
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace; font-size:0.9rem; background:var(--bg); color:var(--text); line-height:1.5; }
+    .wrap { max-width:1400px; margin:0 auto; padding:1.25rem; }
 
-    body {
-      font-family: 'SF Mono', Monaco, monospace;
-      font-size: 12px;
-      background: var(--bg);
-      color: var(--text);
-      padding: 1rem;
-    }
+    /* Header */
+    header { display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0 0.75rem; border-bottom:1px solid var(--border); margin-bottom:1rem; }
+    header h1 { font-size:1.1rem; font-weight:600; letter-spacing:1px; text-transform:uppercase; }
+    .header-right { display:flex; align-items:center; gap:0.75rem; font-size:0.85rem; color:var(--text-dim); }
+    .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+    .dot.ok { background:var(--success); }
+    .dot.err { background:var(--error); }
+    .dot.wait { background:var(--warning); animation:pulse 1.2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
 
-    .container {
-      max-width: 1400px;
-      margin: 0 auto;
-    }
+    /* Section */
+    section { margin-bottom:1.5rem; }
+    section h2 { font-size:0.8rem; font-weight:600; text-transform:uppercase; letter-spacing:1.5px; color:var(--text-dim); margin-bottom:0.5rem; }
 
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 1rem 0;
-      border-bottom: 1px solid var(--surface);
-      margin-bottom: 1rem;
-    }
+    /* Table */
+    table { width:100%; border-collapse:collapse; }
+    th { text-align:left; padding:0.5rem 0.75rem; background:var(--surface); border-bottom:1px solid var(--border); font-size:0.8rem; text-transform:uppercase; letter-spacing:1px; color:var(--text-faint); font-weight:500; }
+    td { padding:0.5rem 0.75rem; border-bottom:1px solid var(--border); vertical-align:top; }
+    tr.checking { background:rgba(66,165,245,0.04); }
 
-    .connection-indicator {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      margin-right: 0.5rem;
-    }
+    /* Badge */
+    .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:0.8rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; }
+    .badge.ok { background:var(--success); color:#fff; }
+    .badge.unknown { background:var(--surface2); color:var(--text-dim); }
+    .badge.unhealthy, .badge.degraded, .badge.exhausted, .badge.errored { background:var(--error); color:#fff; }
+    .badge.deploying { background:var(--info); color:#fff; }
+    .badge.blocked, .badge.not_found { background:var(--warning); color:#000; }
+    .badge.info { background:var(--info); color:#fff; }
+    .badge.warning { background:var(--warning); color:#000; }
+    .badge.error, .badge.critical { background:var(--error); color:#fff; }
 
-    .connected { background: var(--success); }
-    .reconnecting { background: var(--warning); animation: pulse 1s infinite; }
-    .error { background: var(--error); }
+    /* Tooltip */
+    [data-tip] { position:relative; cursor:help; }
+    [data-tip]:hover::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 4px); left:50%; transform:translateX(-50%); background:var(--text); color:var(--bg); padding:2px 6px; border-radius:3px; font-size:0.7rem; font-weight:400; white-space:nowrap; z-index:10; pointer-events:none; }
+    [data-tip].tip-block:hover::after { white-space:normal; max-width:320px; text-align:left; }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
+    /* Config flags */
+    .flags { display:flex; gap:3px; }
+    .flag { width:22px; height:22px; border-radius:3px; display:inline-flex; align-items:center; justify-content:center; font-size:0.8rem; font-weight:700; }
+    .flag.on { background:var(--success); color:#fff; }
+    .flag.off { background:var(--surface2); color:var(--text-faint); }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 1rem 0;
-    }
+    /* Containers */
+    .containers { margin-top:4px; }
+    .ct-row { display:flex; align-items:baseline; gap:0.5rem; padding:2px 0; font-size:0.85rem; }
+    .ct-name { color:var(--text); font-weight:500; }
+    .ct-state { color:var(--text-dim); }
+    .ct-stats { color:var(--text-faint); font-size:0.8rem; }
 
-    th {
-      text-align: left;
-      padding: 0.5rem;
-      background: var(--surface);
-      border-bottom: 1px solid #444;
-      font-weight: 500;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
+    /* Mounts toggle */
+    .mounts-toggle { background:none; border:none; color:var(--text-faint); font-size:0.8rem; cursor:pointer; padding:2px 0; margin-left:0; font-family:inherit; }
+    .mounts-toggle:hover { color:var(--text-dim); }
+    .mounts-list { margin-left:0; padding-left:12px; border-left:1px solid var(--border); margin-top:2px; }
+    .mounts-list.hidden { display:none; }
+    .mt-row { display:flex; align-items:baseline; gap:0.35rem; padding:1px 0; font-size:0.8rem; color:var(--text-faint); }
+    .mt-type { color:var(--text-faint); min-width:36px; }
+    .mt-path { color:var(--text-dim); word-break:break-all; }
+    .mt-ro { color:var(--warning); font-size:0.8rem; }
 
-    td {
-      padding: 0.5rem;
-      border-bottom: 1px solid #333;
-    }
+    /* Images */
+    .images { margin-top:4px; }
+    .im-row { display:flex; align-items:baseline; gap:0.5rem; padding:2px 0; font-size:0.85rem; }
+    .im-name { color:var(--text); }
+    .im-digest { color:var(--text-faint); font-size:0.8rem; }
+    .im-size { color:var(--text-faint); font-size:0.8rem; }
 
-    .service-row {
-      transition: background 0.3s;
-    }
+    /* Event detail */
+    .ev-detail { font-size:0.8rem; color:var(--text-faint); margin-top:2px; }
+    .ev-output { font-size:0.8rem; color:var(--text-faint); margin-top:3px; white-space:pre-wrap; word-break:break-all; background:var(--surface); border-radius:3px; padding:4px 6px; max-height:6rem; overflow-y:auto; }
 
-    .service-row[data-updating="true"] {
-      background: rgba(33, 150, 243, 0.1);
-    }
+    /* Stats */
+    .stats { font-size:0.85rem; color:var(--text-dim); line-height:1.6; white-space:nowrap; }
 
-    .status-badge {
-      display: inline-block;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: 10px;
-      font-weight: 500;
-    }
+    /* Buttons */
+    .actions { display:flex; gap:4px; }
+    .btn { padding:4px 10px; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:3px; font-size:0.85rem; font-family:inherit; cursor:pointer; transition:background 0.15s, border-color 0.15s; }
+    .btn:hover { background:var(--surface); border-color:var(--text-dim); }
+    .btn:disabled { opacity:0.3; cursor:not-allowed; }
 
-    .status-ok { background: var(--success); color: white; }
-    .status-error { background: var(--error); color: white; }
-    .status-deploying { background: var(--info); color: white; }
-    .status-checking { background: var(--warning); color: white; }
+    /* Events table */
+    .ev-time { font-size:0.85rem; color:var(--text-dim); white-space:nowrap; }
+    .ev-msg { font-size:0.85rem; color:var(--text-dim); }
 
-    .config-flags {
-      display: flex;
-      gap: 4px;
-    }
-
-    .config-flag {
-      width: 16px;
-      height: 16px;
-      border-radius: 2px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 10px;
-      font-weight: bold;
-    }
-
-    .flag-enabled { background: var(--success); color: white; }
-    .flag-disabled { background: #444; color: #888; }
-
-    button {
-      padding: 4px 8px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid #444;
-      border-radius: 3px;
-      font-size: 11px;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    button:hover:not(:disabled) {
-      background: #3a3a3a;
-      border-color: #666;
-    }
-
-    button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    button.loading {
-      position: relative;
-      color: transparent;
-    }
-
-    button.loading::after {
-      content: '';
-      position: absolute;
-      width: 12px;
-      height: 12px;
-      top: 50%;
-      left: 50%;
-      margin: -6px 0 0 -6px;
-      border: 2px solid var(--text);
-      border-radius: 50%;
-      border-top-color: transparent;
-      animation: spin 0.6s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    .next-check {
-      font-size: 10px;
-      color: var(--text-dim);
-    }
-
-    .container-details {
-      margin-top: 4px;
-      padding-left: 1rem;
-      font-size: 10px;
-      color: var(--text-dim);
-    }
-
-    .container-stat {
-      display: inline-block;
-      margin-right: 1rem;
-    }
-
-    .resource-bar {
-      display: inline-block;
-      width: 100px;
-      height: 4px;
-      background: #333;
-      border-radius: 2px;
-      overflow: hidden;
-      margin: 0 4px;
-      vertical-align: middle;
-    }
-
-    .resource-fill {
-      height: 100%;
-      background: var(--success);
-      transition: width 0.3s, background 0.3s;
-    }
-
-    .resource-fill.warning { background: var(--warning); }
-    .resource-fill.danger { background: var(--error); }
+    /* Empty state */
+    .empty { text-align:center; padding:2rem; color:var(--text-faint); font-size:0.9rem; }
   </style>
 </head>
 <body>
-  <div class="container" data-store="{
-    services: [],
-    events: [],
-    connectionStatus: 'connecting',
-    uptime: 0,
-    lastUpdate: null
-  }">
+<div class="wrap">
+  <header>
+    <h1>Dockward</h1>
+    <div class="header-right">
+      <button class="btn" id="theme-btn" onclick="toggleTheme()" data-tip="Toggle light/dark mode"></button>
+      <span class="dot wait" id="conn-dot"></span>
+      <span id="conn-label">Connecting...</span>
+      <span id="updated"></span>
+    </div>
+  </header>
 
-    <!-- Header -->
-    <header>
-      <h1>Dockward</h1>
-      <div>
-        <span
-          class="connection-indicator"
-          data-class="$connectionStatus"
-        ></span>
-        <span data-text="$connectionStatus === 'connected' ? 'Live' : $connectionStatus"></span>
-        <span data-show="$lastUpdate" data-text="' • Updated: ' + new Date($lastUpdate).toLocaleTimeString()"></span>
-      </div>
-    </header>
+  <section>
+    <h2>Services</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Status</th>
+          <th data-tip="Auto Update / Auto Heal / Auto Start">Config</th>
+          <th data-tip="Time until next update check">Next</th>
+          <th data-tip="U=Updates R=Rollbacks H=Heals F=Failures">Stats</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="svc-body">
+        <tr><td colspan="6" class="empty">Loading...</td></tr>
+      </tbody>
+    </table>
+  </section>
 
-    <!-- Services Table -->
-    <section>
-      <h2>Services</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Service</th>
-            <th>Status</th>
-            <th>Config</th>
-            <th>Next Check</th>
-            <th>Resources</th>
-            <th>Stats</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody data-each="service in $services">
-          <tr
-            class="service-row"
-            data-updating="$service.check_status === 'checking'"
-          >
-            <!-- Service Name -->
-            <td>
-              <strong data-text="$service.name"></strong>
-              <div data-show="$service.containers?.length" class="container-details">
-                <div data-each="container in $service.containers">
-                  <span class="container-stat">
-                    <span data-text="$container.name"></span>:
-                    <span data-text="$container.state"></span>
-                  </span>
-                </div>
-              </div>
-            </td>
+  <section>
+    <h2>Recent Events</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Service</th>
+          <th>Event</th>
+          <th>Level</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody id="ev-body">
+        <tr><td colspan="5" class="empty">No events yet</td></tr>
+      </tbody>
+    </table>
+  </section>
+</div>
 
-            <!-- Status -->
-            <td>
-              <span
-                class="status-badge"
-                data-class="'status-' + $service.status"
-                data-text="$service.status"
-              ></span>
-              <span
-                data-show="$service.errored"
-                data-text="' ⚠'"
-                title="$service.errored"
-                style="cursor: help;"
-              ></span>
-            </td>
+<script>
+(function(){
+  var events = [];
+  var MAX_EVENTS = 50;
 
-            <!-- Config Flags -->
-            <td>
-              <div class="config-flags">
-                <span
-                  class="config-flag"
-                  data-class="$service.auto_update ? 'flag-enabled' : 'flag-disabled'"
-                  title="Auto Update"
-                >U</span>
-                <span
-                  class="config-flag"
-                  data-class="$service.auto_heal ? 'flag-enabled' : 'flag-disabled'"
-                  title="Auto Heal"
-                >H</span>
-                <span
-                  class="config-flag"
-                  data-class="$service.auto_start ? 'flag-enabled' : 'flag-disabled'"
-                  title="Auto Start"
-                >S</span>
-              </div>
-            </td>
+  // ---- helpers ----
+  function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
 
-            <!-- Next Check -->
-            <td>
-              <span
-                class="next-check"
-                data-show="$service.next_check"
-                data-text="formatTimeUntil($service.next_check)"
-              ></span>
-              <span
-                data-show="$service.check_status === 'checking'"
-                style="color: var(--warning);"
-              >⏳ checking...</span>
-            </td>
+  function fmtTime(ts) {
+    if (!ts) return '--';
+    var d = new Date(ts) - Date.now();
+    if (d < 0) return 'now';
+    if (d < 60000) return Math.round(d/1000) + 's';
+    if (d < 3600000) return Math.round(d/60000) + 'm';
+    return Math.round(d/3600000) + 'h';
+  }
 
-            <!-- Resources -->
-            <td>
-              <div data-show="$service.has_stats">
-                <div>
-                  CPU: <span data-text="Math.round($service.cpu_percent) + '%'"></span>
-                  <span class="resource-bar">
-                    <span
-                      class="resource-fill"
-                      data-style="'width: ' + $service.cpu_percent + '%'"
-                      data-class="$service.cpu_percent > 80 ? 'danger' : $service.cpu_percent > 60 ? 'warning' : ''"
-                    ></span>
-                  </span>
-                </div>
-                <div>
-                  MEM: <span data-text="Math.round($service.memory_usage_mb) + 'MB'"></span>
-                  <span class="resource-bar">
-                    <span
-                      class="resource-fill"
-                      data-style="'width: ' + $service.memory_percent + '%'"
-                      data-class="$service.memory_percent > 85 ? 'danger' : $service.memory_percent > 70 ? 'warning' : ''"
-                    ></span>
-                  </span>
-                </div>
-              </div>
-              <span data-show="!$service.has_stats" style="color: var(--text-dim);">--</span>
-            </td>
+  function flagHtml(label, on) {
+    return '<span class="flag ' + (on ? 'on' : 'off') + '" data-tip="' + esc(label) + '">' + esc(label.charAt(0)) + '</span>';
+  }
 
-            <!-- Stats -->
-            <td style="font-size: 10px;">
-              <div>U: <span data-text="$service.updates_total || 0"></span></div>
-              <div>R: <span data-text="$service.rollbacks_total || 0"></span></div>
-              <div>H: <span data-text="$service.restarts_total || 0"></span></div>
-              <div>F: <span data-text="$service.failures_total || 0"></span></div>
-            </td>
+  // ---- mount toggle (global) ----
+  window.toggleMounts = function(id) {
+    var el = document.getElementById(id);
+    var btn = el.previousElementSibling;
+    if (el.classList.contains('hidden')) {
+      el.classList.remove('hidden');
+      btn.textContent = btn.textContent.replace('\u25b8', '\u25be');
+    } else {
+      el.classList.add('hidden');
+      btn.textContent = btn.textContent.replace('\u25be', '\u25b8');
+    }
+  };
 
-            <!-- Actions -->
-            <td>
-              <button
-                data-on-click="triggerService($service.name)"
-                data-disabled="$service.check_status === 'checking'"
-              >Trigger</button>
-              <button
-                data-on-click="redeployService($service.name)"
-              >Redeploy</button>
-              <button
-                data-show="$service.blocked"
-                data-on-click="unblockService($service.name)"
-              >Unblock</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <!-- Events -->
-    <section>
-      <h2>Recent Events</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Service</th>
-            <th>Event</th>
-            <th>Level</th>
-            <th>Message</th>
-          </tr>
-        </thead>
-        <tbody data-each="event in $events">
-          <tr>
-            <td
-              style="font-size: 10px; color: var(--text-dim);"
-              data-text="new Date($event.timestamp).toLocaleString()"
-            ></td>
-            <td data-text="$event.service"></td>
-            <td data-text="$event.event"></td>
-            <td>
-              <span
-                class="status-badge"
-                data-class="'status-' + ($event.level === 'critical' ? 'error' : $event.level)"
-                data-text="$event.level"
-              ></span>
-            </td>
-            <td
-              style="font-size: 11px; color: var(--text-dim);"
-              data-text="$event.message"
-            ></td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-  </div>
-
-  <!-- Helper functions -->
-  <script type="module">
-    // Format time until next check
-    window.formatTimeUntil = function(timestamp) {
-      if (!timestamp) return '--'
-      const diff = new Date(timestamp) - new Date()
-      if (diff < 0) return 'now'
-      if (diff < 60000) return Math.round(diff / 1000) + 's'
-      if (diff < 3600000) return Math.round(diff / 60000) + 'm'
-      return Math.round(diff / 3600000) + 'h'
+  // ---- render services ----
+  function renderServices(services) {
+    var tb = document.getElementById('svc-body');
+    if (!services || !services.length) {
+      tb.innerHTML = '<tr><td colspan="6" class="empty">No services</td></tr>';
+      return;
     }
 
-    // Service actions
-    window.triggerService = async function(name) {
-      await fetch(` + "`" + `/trigger/${name}` + "`" + `, { method: 'POST' })
-    }
+    var html = '';
+    for (var i = 0; i < services.length; i++) {
+      var s = services[i];
+      var isChecking = s.check_status === 'checking';
 
-    window.redeployService = async function(name) {
-      if (!confirm(` + "`" + `Redeploy ${name}?` + "`" + `)) return
-      const preview = await fetch(` + "`" + `/command-preview/${name}` + "`" + `).then(r => r.json())
-      if (confirm(` + "`" + `Execute: ${preview.command}?` + "`" + `)) {
-        await fetch(` + "`" + `/redeploy/${name}` + "`" + `, { method: 'POST' })
+      html += '<tr class="' + (isChecking ? 'checking' : '') + '">';
+
+      // Service name + containers + mounts + images
+      html += '<td><strong>' + esc(s.name) + '</strong>';
+      if (s.containers && s.containers.length) {
+        html += '<div class="containers">';
+        for (var c = 0; c < s.containers.length; c++) {
+          var ct = s.containers[c];
+          var cCpu = Math.round(ct.cpu_percent || 0);
+          var cMem = Math.round(ct.memory_usage_mb || 0);
+          html += '<div class="ct-row">';
+          html += '<span class="ct-name">' + esc(ct.name) + '</span>';
+          html += '<span class="ct-state">' + esc(ct.state) + '</span>';
+          if (ct.cpu_percent || ct.memory_usage_mb) {
+            html += '<span class="ct-stats">' + cCpu + '% cpu &middot; ' + cMem + 'MB mem</span>';
+          }
+          html += '</div>';
+          // Mounts: sorted, collapsed by default
+          if (ct.mounts && ct.mounts.length) {
+            var sorted = ct.mounts.slice().sort(function(a, b) {
+              return (a.destination || '').localeCompare(b.destination || '');
+            });
+            var mid = 'mt-' + i + '-' + c;
+            html += '<button class="mounts-toggle" onclick="toggleMounts(\'' + mid + '\')">\u25b8 ' + sorted.length + ' mount' + (sorted.length !== 1 ? 's' : '') + '</button>';
+            html += '<div class="mounts-list hidden" id="' + mid + '">';
+            for (var m = 0; m < sorted.length; m++) {
+              var mt = sorted[m];
+              var label = mt.name || mt.source;
+              html += '<div class="mt-row">';
+              html += '<span class="mt-type">' + esc(mt.type) + '</span>';
+              html += '<span class="mt-path">' + esc(label) + ' \u2192 ' + esc(mt.destination) + '</span>';
+              if (mt.read_only) html += ' <span class="mt-ro">ro</span>';
+              html += '</div>';
+            }
+            html += '</div>';
+          }
+        }
+        html += '</div>';
       }
-    }
+      if (s.images && s.images.length) {
+        html += '<div class="images">';
+        for (var im = 0; im < s.images.length; im++) {
+          var img = s.images[im];
+          html += '<div class="im-row">';
+          html += '<span class="im-name">' + esc(img.image) + '</span>';
+          if (img.size_mb) html += '<span class="im-size">' + img.size_mb + 'MB</span>';
+          html += '<span class="im-digest">' + esc(img.short) + '</span>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      html += '</td>';
 
-    window.unblockService = async function(name) {
-      await fetch(` + "`" + `/unblock/${name}` + "`" + `, { method: 'POST' })
+      // Status
+      html += '<td><span class="badge ' + esc(s.status) + '">' + esc(s.status) + '</span>';
+      if (s.errored) html += ' <span class="tip-block" data-tip="' + esc(s.errored) + '">&#9888;</span>';
+      html += '</td>';
+
+      // Config flags
+      html += '<td><div class="flags">';
+      html += flagHtml('Update', s.auto_update);
+      html += flagHtml('Heal', s.auto_heal);
+      html += flagHtml('Start', s.auto_start);
+      html += '</div></td>';
+
+      // Next check
+      html += '<td>';
+      if (isChecking) {
+        html += '<span style="color:var(--warning)">checking</span>';
+      } else {
+        html += '<span style="color:var(--text-dim)">' + fmtTime(s.next_check) + '</span>';
+      }
+      html += '</td>';
+
+      // Stats
+      html += '<td class="stats">';
+      html += '<span data-tip="Updates deployed">U:' + (s.updates_total||0) + '</span> <span data-tip="Rollbacks performed">R:' + (s.rollbacks_total||0) + '</span><br>';
+      html += '<span data-tip="Heals (container restarts)">H:' + (s.restarts_total||0) + '</span> <span data-tip="Failures">F:' + (s.failures_total||0) + '</span>';
+      html += '</td>';
+
+      // Actions
+      html += '<td><div class="actions">';
+      html += '<button class="btn" onclick="triggerSvc(\'' + esc(s.name) + '\')"' + (isChecking ? ' disabled' : '') + '>Trigger</button>';
+      html += '<button class="btn" onclick="redeploySvc(\'' + esc(s.name) + '\')">Redeploy</button>';
+      if (s.blocked) {
+        html += '<button class="btn" onclick="unblockSvc(\'' + esc(s.name) + '\')">Unblock</button>';
+      }
+      html += '</div></td>';
+
+      html += '</tr>';
     }
-  </script>
+    tb.innerHTML = html;
+  }
+
+  // ---- render events ----
+  function shortSha(d) {
+    if (!d) return '';
+    return d.length > 19 ? d.substring(0, 19) : d;
+  }
+
+  function renderEvents() {
+    var tb = document.getElementById('ev-body');
+    if (!events.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="empty">No events yet</td></tr>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      var t = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
+      var lvl = e.level || 'info';
+      if (lvl === 'critical') lvl = 'error';
+      html += '<tr>';
+      html += '<td class="ev-time">' + esc(t) + '</td>';
+      html += '<td>' + esc(e.service) + '</td>';
+      html += '<td>' + esc(e.event) + '</td>';
+      html += '<td><span class="badge ' + esc(lvl) + '">' + esc(e.level) + '</span></td>';
+      html += '<td class="ev-msg">' + esc(e.message);
+      // Details line: digest transition, container, reason
+      var details = [];
+      if (e.old_digest && e.new_digest) {
+        details.push(shortSha(e.old_digest) + ' &rarr; ' + shortSha(e.new_digest));
+      } else if (e.new_digest) {
+        details.push(shortSha(e.new_digest));
+      }
+      if (e.container) details.push(esc(e.container));
+      if (e.reason) details.push(esc(e.reason));
+      if (details.length) {
+        html += '<div class="ev-detail">' + details.join(' &middot; ') + '</div>';
+      }
+      if (e.output) {
+        html += '<div class="ev-output">' + esc(e.output) + '</div>';
+      }
+      html += '</td>';
+      html += '</tr>';
+    }
+    tb.innerHTML = html;
+  }
+
+  // ---- connection status ----
+  function setConn(status) {
+    var dot = document.getElementById('conn-dot');
+    var label = document.getElementById('conn-label');
+    dot.className = 'dot ' + (status === 'connected' ? 'ok' : status === 'error' ? 'err' : 'wait');
+    label.textContent = status === 'connected' ? 'Live' : status === 'error' ? 'Disconnected' : 'Connecting...';
+  }
+
+  function setUpdated() {
+    document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  }
+
+  // ---- SSE ----
+  function connect() {
+    var es = new EventSource('/ui/stream');
+
+    es.addEventListener('status', function(e) {
+      try {
+        var data = JSON.parse(e.data);
+        renderServices(data.services || []);
+        setConn('connected');
+        setUpdated();
+      } catch(err) {
+        console.error('status parse error:', err);
+      }
+    });
+
+    es.addEventListener('audit', function(e) {
+      try {
+        var ev = JSON.parse(e.data);
+        events.unshift(ev);
+        if (events.length > MAX_EVENTS) events.length = MAX_EVENTS;
+        renderEvents();
+      } catch(err) {
+        console.error('audit parse error:', err);
+      }
+    });
+
+    es.onerror = function() {
+      setConn('error');
+    };
+
+    es.onopen = function() {
+      setConn('connected');
+    };
+  }
+
+  // ---- actions (global) ----
+  window.triggerSvc = function(name) {
+    fetch('/trigger/' + encodeURIComponent(name), { method: 'POST' });
+  };
+
+  window.redeploySvc = function(name) {
+    if (!confirm('Redeploy ' + name + '?')) return;
+    fetch('/command-preview/' + encodeURIComponent(name))
+      .then(function(r) { return r.json(); })
+      .then(function(p) {
+        if (confirm('Execute: ' + p.command + '?')) {
+          fetch('/redeploy/' + encodeURIComponent(name), { method: 'POST' });
+        }
+      });
+  };
+
+  window.unblockSvc = function(name) {
+    fetch('/unblock/' + encodeURIComponent(name), { method: 'POST' });
+  };
+
+  // ---- theme toggle ----
+  function updateThemeBtn() {
+    var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+    document.getElementById('theme-btn').textContent = cur === 'dark' ? 'Light' : 'Dark';
+  }
+  window.toggleTheme = function() {
+    var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+    var next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('dw-theme', next);
+    updateThemeBtn();
+  };
+  updateThemeBtn();
+
+  // ---- initial load + connect ----
+  fetch('/status')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      renderServices(data.services || []);
+      setConn('connected');
+      setUpdated();
+    })
+    .catch(function() {
+      setConn('error');
+    });
+
+  connect();
+})();
+</script>
 </body>
 </html>`
 
@@ -1328,13 +1396,17 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 	logger.Printf("[api] force redeploy: %s", svc.Name)
 	saferun.Go("force-redeploy-"+svc.Name, func() {
 		ctx := context.Background()
-		if err := compose.Up(ctx, a.updater.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+		a.updater.tryStartDeploy(svc.Name)
+		defer a.updater.clearDeploying(svc.Name)
+		composeOut, err := compose.Up(ctx, a.updater.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+		if err != nil {
 			logger.Printf("[api] ERROR: force redeploy failed for %s: %v", svc.Name, err)
 			if werr := a.audit.Write(audit.Entry{
 				Service: svc.Name,
 				Event:   "force_redeploy_failed",
 				Message: fmt.Sprintf("Force redeploy failed: %v", err),
 				Level:   "error",
+				Output:  composeOut,
 			}); werr != nil {
 				logger.Printf("[api] ERROR: audit write error: %v", werr)
 			}
@@ -1346,6 +1418,7 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 			Event:   "force_redeploy",
 			Message: "Forced redeploy via API",
 			Level:   "info",
+			Output:  composeOut,
 		}); werr != nil {
 			logger.Printf("[api] ERROR: audit write error: %v", werr)
 		}

@@ -37,6 +37,7 @@ type Monitor struct {
 	docker     *docker.Client
 	dispatcher *notify.Dispatcher
 	audit      *audit.Logger
+	metrics    *Metrics
 
 	// latest holds the most recent stats snapshot per service for the status API.
 	latest   map[string]ServiceStats
@@ -52,12 +53,13 @@ type Monitor struct {
 }
 
 // NewMonitor creates a resource monitor.
-func NewMonitor(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatcher, al *audit.Logger) *Monitor {
+func NewMonitor(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatcher, al *audit.Logger, metrics *Metrics) *Monitor {
 	return &Monitor{
 		cfg:            cfg,
 		docker:         dc,
 		dispatcher:     dispatcher,
 		audit:          al,
+		metrics:        metrics,
 		latest:         make(map[string]ServiceStats),
 		containerStats: make(map[string]ContainerStats),
 		alertedAt:      make(map[string]time.Time),
@@ -160,17 +162,21 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
 
 		// Per-container threshold alerts use container-scoped cooldown keys.
 		if svc.CPUThreshold > 0 && raw.CPUPercent > svc.CPUThreshold {
-			m.maybeAlert(ctx, svc, "cpu:"+id, cooldown,
+			if m.maybeAlert(ctx, svc, "cpu:"+id, cooldown,
 				fmt.Sprintf("Container %s CPU %.1f%% exceeds threshold %.1f%%", id[:12], raw.CPUPercent, svc.CPUThreshold),
-			)
+			) {
+				m.metrics.IncCPUAlerts(svc.Name)
+			}
 		}
 
 		if svc.MemoryThreshold > 0 && raw.MemoryLimit > 0 {
 			if containerMemPct > svc.MemoryThreshold {
-				m.maybeAlert(ctx, svc, "memory:"+id, cooldown,
+				if m.maybeAlert(ctx, svc, "memory:"+id, cooldown,
 					fmt.Sprintf("Container %s memory %.1f%% (%.0f MB / %.0f MB) exceeds threshold %.1f%%",
 						id[:12], containerMemPct, float64(raw.MemoryUsage)/1024/1024, float64(raw.MemoryLimit)/1024/1024, svc.MemoryThreshold),
-				)
+				) {
+					m.metrics.IncMemoryAlerts(svc.Name)
+				}
 			}
 		}
 	}
@@ -191,14 +197,14 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
 	m.latestMu.Unlock()
 }
 
-func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric string, cooldown time.Duration, message string) {
+func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric string, cooldown time.Duration, message string) bool {
 	key := svc.Name + ":" + metric
 
 	m.alertedAtMu.Lock()
 	last, ok := m.alertedAt[key]
 	if ok && time.Since(last) < cooldown {
 		m.alertedAtMu.Unlock()
-		return
+		return false
 	}
 	m.alertedAt[key] = time.Now()
 	m.alertedAtMu.Unlock()
@@ -220,6 +226,7 @@ func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric str
 	}); err != nil {
 		logger.Printf("[monitor] %s: audit write error: %v", svc.Name, err)
 	}
+	return true
 }
 
 // findRunningContainerIDs returns all running container IDs for a service.

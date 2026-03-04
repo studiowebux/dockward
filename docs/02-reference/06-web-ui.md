@@ -21,35 +21,40 @@ One row per configured service. Columns:
 
 | Column | Description |
 |--------|-------------|
-| Name | Service name. Expands to a per-container list when clicked (state, status string) |
+| Name | Service name with container details, volume mounts, and deployed image info |
 | Status | Synthesised status word — same values as `GET /status`. Color-coded |
-| Image | Deployed image reference (e.g. `myapp:latest`). `--` until first deploy |
-| Digest | Short form of the deployed image digest. `--` until first deploy |
-| CPU / Mem | Current CPU % and memory % across all containers. `--` when `has_stats` is false |
-| Updates | Cumulative update counter since process start |
-| Rollbacks | Cumulative rollback counter since process start |
-| Restarts | Cumulative restart counter since process start |
-| Actions | Trigger and Unblock buttons (Unblock only shown when service is blocked) |
+| Config | Auto Update / Auto Heal / Auto Start flags (U/H/S badges) |
+| Next Check | Time until next update check |
+| Resources | CPU and memory usage bars (service aggregate) |
+| Stats | U=Updates, R=Rollbacks, H=Heals, F=Failures (hover for full labels) |
+| Actions | Trigger, Redeploy, and Unblock buttons |
 
-The table refreshes every 15 seconds via a background `fetch` to `GET /status`. Open `<details>` rows survive the refresh — their state is preserved across updates.
+The table updates in real-time via SSE from `GET /ui/stream`. Status pushes immediately on state changes, with a 30-second fallback poll.
 
-## Container list
+## Service name cell
 
-Clicking the `N container(s)` summary inside the Name cell expands a per-container list showing:
+The Name column contains three collapsible sections:
 
-- Container name
-- State (`running`, `exited`, `created`, etc.)
-- Status string from Docker (e.g. `Up 2 hours (healthy)`)
+**Containers** — Per-container details:
+- Container name, state, CPU %, and memory usage
+- Volume/bind mounts listed below each container (type, name/source, destination, read-only flag)
+
+**Images** — All tracked images for the service:
+- Full image reference (e.g. `localhost:5000/myapp:latest`)
+- Uncompressed local size in MB
+- Short digest (`sha256:abc123def45`)
 
 ## Recent events
 
-A live feed of the last 50 audit entries, streamed via SSE from `GET /ui/events`. New entries are prepended as they arrive. On page load the last 50 entries are replayed immediately from the audit log.
+A live feed of the last 50 audit entries, streamed via SSE from `GET /ui/stream`. New entries appear instantly as they arrive. On page load (including F5 refresh), the last 50 entries are replayed from the audit log so the table is never empty.
 
-Columns: time, service, event type, level (color-coded), message.
+Columns: time, service, event type, level (color-coded badge), message.
 
 ## Controls
 
-**Trigger** — sends `POST /trigger/<name>` without reloading the page. The service's status updates on the next 15-second refresh.
+**Trigger** — sends `POST /trigger/<name>`. Status updates in real-time via SSE.
+
+**Redeploy** — sends `POST /redeploy/<name>`. Forces a full redeployment regardless of digest state.
 
 **Unblock** — sends `POST /unblock/<name>`. Visible only when the service status is `blocked`.
 

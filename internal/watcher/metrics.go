@@ -12,10 +12,12 @@ type Metrics struct {
 	mu sync.RWMutex
 
 	// Counters (per service)
-	updates   map[string]int64
-	rollbacks map[string]int64
-	restarts  map[string]int64
-	failures  map[string]int64
+	updates      map[string]int64
+	rollbacks    map[string]int64
+	restarts     map[string]int64
+	failures     map[string]int64
+	cpuAlerts    map[string]int64
+	memoryAlerts map[string]int64
 
 	// Gauges
 	serviceHealthy map[string]bool
@@ -36,10 +38,12 @@ type Metrics struct {
 // NewMetrics creates an initialized metrics collector.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		updates:        make(map[string]int64),
-		rollbacks:      make(map[string]int64),
-		restarts:       make(map[string]int64),
-		failures:       make(map[string]int64),
+		updates:      make(map[string]int64),
+		rollbacks:    make(map[string]int64),
+		restarts:     make(map[string]int64),
+		failures:     make(map[string]int64),
+		cpuAlerts:    make(map[string]int64),
+		memoryAlerts: make(map[string]int64),
 		serviceHealthy: make(map[string]bool),
 		serviceBlocked: make(map[string]bool),
 		startTime:      time.Now(),
@@ -70,6 +74,12 @@ func (m *Metrics) SeedServices(names []string) {
 		if _, ok := m.serviceBlocked[name]; !ok {
 			m.serviceBlocked[name] = false
 		}
+		if _, ok := m.cpuAlerts[name]; !ok {
+			m.cpuAlerts[name] = 0
+		}
+		if _, ok := m.memoryAlerts[name]; !ok {
+			m.memoryAlerts[name] = 0
+		}
 	}
 }
 
@@ -94,6 +104,18 @@ func (m *Metrics) IncRestarts(service string) {
 func (m *Metrics) IncFailures(service string) {
 	m.mu.Lock()
 	m.failures[service]++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncCPUAlerts(service string) {
+	m.mu.Lock()
+	m.cpuAlerts[service]++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncMemoryAlerts(service string) {
+	m.mu.Lock()
+	m.memoryAlerts[service]++
 	m.mu.Unlock()
 }
 
@@ -261,6 +283,18 @@ func (m *Metrics) Prometheus() string {
 	b.WriteString("# HELP watcher_uptime_seconds Seconds since watcher started\n")
 	b.WriteString("# TYPE watcher_uptime_seconds gauge\n")
 	fmt.Fprintf(&b, "watcher_uptime_seconds %.0f\n", time.Since(m.startTime).Seconds())
+
+	b.WriteString("# HELP watcher_cpu_alerts_total Total CPU threshold alerts\n")
+	b.WriteString("# TYPE watcher_cpu_alerts_total counter\n")
+	for svc, count := range m.cpuAlerts {
+		fmt.Fprintf(&b, "watcher_cpu_alerts_total{service=%q} %d\n", svc, count)
+	}
+
+	b.WriteString("# HELP watcher_memory_alerts_total Total memory threshold alerts\n")
+	b.WriteString("# TYPE watcher_memory_alerts_total counter\n")
+	for svc, count := range m.memoryAlerts {
+		fmt.Fprintf(&b, "watcher_memory_alerts_total{service=%q} %d\n", svc, count)
+	}
 
 	// Docker daemon health metrics
 	b.WriteString("# HELP docker_daemon_healthy Whether Docker daemon is healthy (1) or not (0)\n")

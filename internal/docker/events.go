@@ -55,8 +55,10 @@ func (c *Client) StreamEvents(ctx context.Context, handler EventHandler) {
 
 func (c *Client) streamOnce(ctx context.Context, handler EventHandler) error {
 	// Filter for container health_status, die, and start events.
+	// Use since=<now> to avoid replaying buffered events from before connection.
 	filters := url.QueryEscape(`{"type":["container"],"event":["health_status","die","start"]}`)
-	reqURL := fmt.Sprintf("http://localhost/%s/events?filters=%s", apiVersion, filters)
+	since := fmt.Sprintf("%d", time.Now().Unix())
+	reqURL := fmt.Sprintf("http://localhost/%s/events?since=%s&filters=%s", apiVersion, since, filters)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {

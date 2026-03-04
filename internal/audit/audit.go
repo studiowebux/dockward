@@ -31,6 +31,7 @@ type Entry struct {
 	NewDigest string    `json:"new_digest,omitempty"`
 	Container string    `json:"container,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
+	Output    string    `json:"output,omitempty"`
 }
 
 // Pusher forwards audit entries to a remote warden.

@@ -131,7 +131,7 @@ func main() {
 
 	updater := watcher.NewUpdater(cfg, dc, rc, dispatcher, metrics, auditLog)
 	healer := watcher.NewHealer(cfg, dc, dispatcher, updater, metrics, auditLog)
-	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog)
+	monitor := watcher.NewMonitor(cfg, dc, dispatcher, auditLog, metrics)
 
 	// Collect config warnings for health endpoint and set metric
 	configWarnings := make([]string, 0, len(cfg.InvalidServices))
@@ -160,6 +160,14 @@ func main() {
 	saferun.Go("signal-handler", func() {
 		sig := <-sigCh
 		logger.Printf("received %s, starting graceful shutdown", sig)
+		if werr := auditLog.Write(audit.Entry{
+			Service: "dockward",
+			Event:   "shutdown",
+			Message: fmt.Sprintf("Graceful shutdown initiated (signal: %s)", sig),
+			Level:   "info",
+		}); werr != nil {
+			logger.Printf("audit write error: %v", werr)
+		}
 
 		// Create a context for shutdown with timeout
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -190,6 +198,14 @@ func main() {
 		Message: "Dockward started.",
 		Level:   notify.LevelInfo,
 	})
+	if werr := auditLog.Write(audit.Entry{
+		Service: "dockward",
+		Event:   "started",
+		Message: fmt.Sprintf("Dockward %s started", version),
+		Level:   "info",
+	}); werr != nil {
+		logger.Printf("audit write error: %v", werr)
+	}
 
 	// Block until shutdown.
 	<-ctx.Done()

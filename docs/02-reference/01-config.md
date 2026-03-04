@@ -302,15 +302,20 @@ Service validation rules:
     {
       "name": "myapp",
       "images": ["myapp:latest"],
+      "silent": false,
       "compose_files": [
         "/srv/myapp/docker-compose.yml",
         "/srv/myapp/docker-compose.override.yml"
       ],
       "compose_project": "myapp",
+      "container_name": "",
       "env_file": "/srv/myapp/.env",
       "auto_update": true,
       "auto_start": true,
       "auto_heal": true,
+      "compose_watch": false,
+      "cpu_threshold": 80,
+      "memory_threshold": 85,
       "health_grace": 60,
       "heal_cooldown": 300,
       "heal_max_restarts": 3

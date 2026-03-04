@@ -55,6 +55,11 @@ type Healer struct {
 	// Cleared when a healthy event is received.
 	exhausted   map[string]bool
 	exhaustedMu sync.Mutex
+
+	// startedAt records when the healer started. Die events within the
+	// startup grace period (15s) are suppressed to avoid false alarms
+	// from stale Docker events received right after dockward restarts.
+	startedAt time.Time
 }
 
 // NewHealer creates a health monitor.
@@ -70,6 +75,7 @@ func NewHealer(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispatc
 		degraded:      make(map[string]bool),
 		restartCounts: make(map[string]int),
 		exhausted:     make(map[string]bool),
+		startedAt:     time.Now(),
 	}
 }
 
@@ -155,6 +161,16 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 			Container: containerName,
 			Level:     notify.LevelWarning,
 		})
+		if err := h.audit.Write(audit.Entry{
+			Service:   svc.Name,
+			Event:     "unhealthy",
+			Message:   "Container is unhealthy (auto_heal disabled).",
+			Level:     "warning",
+			Container: containerName,
+			Reason:    reason,
+		}); err != nil {
+			logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+		}
 		return
 	}
 
@@ -202,6 +218,16 @@ func (h *Healer) handleUnhealthy(ctx context.Context, svc *config.Service, conta
 			Container: containerName,
 			Level:     notify.LevelCritical,
 		})
+		if werr := h.audit.Write(audit.Entry{
+			Service:   svc.Name,
+			Event:     "restart_failed",
+			Message:   fmt.Sprintf("Failed to restart unhealthy container: %v", err),
+			Level:     "critical",
+			Container: containerName,
+			Reason:    reason,
+		}); werr != nil {
+			logger.Printf("[healer] %s: audit write error: %v", svc.Name, werr)
+		}
 		return
 	}
 
@@ -267,6 +293,16 @@ func (h *Healer) verifyAfterRestart(ctx context.Context, svc *config.Service, co
 				Container: containerName,
 				Level:     notify.LevelCritical,
 			})
+			if werr := h.audit.Write(audit.Entry{
+				Service:   svc.Name,
+				Event:     "critical",
+				Message:   fmt.Sprintf("Container still unhealthy after restart (attempt %d/%d).", count, svc.HealMaxRestarts),
+				Level:     "critical",
+				Container: containerName,
+				Reason:    info.LastHealthOutput(),
+			}); werr != nil {
+				logger.Printf("[healer] %s: audit write error: %v", svc.Name, werr)
+			}
 		}
 		return
 	}
@@ -360,6 +396,13 @@ func (h *Healer) handleHealthy(ctx context.Context, svc *config.Service, contain
 }
 
 func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerName string) {
+	// Suppress die events during startup grace period (15s) to avoid
+	// false alarms from stale events received right after dockward restarts.
+	if time.Since(h.startedAt) < 15*time.Second {
+		debugf("[healer] %s: ignoring die event during startup grace period", svc.Name)
+		return
+	}
+
 	// Skip if in deploy grace period (expected during updates).
 	if h.updater.IsDeploying(svc.Name) {
 		return

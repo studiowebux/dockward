@@ -19,6 +19,7 @@ type ImageInspect struct {
 	ID          string   `json:"Id"`
 	RepoDigests []string `json:"RepoDigests"`
 	RepoTags    []string `json:"RepoTags"`
+	Size        int64    `json:"Size"` // uncompressed size in bytes
 }
 
 // InspectImage returns details for a local image.

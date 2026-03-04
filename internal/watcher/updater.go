@@ -129,6 +129,13 @@ func (u *Updater) clearDeploying(service string) {
 	u.deployingMu.Unlock()
 }
 
+// DeployingCount returns the number of services currently in a deploy cycle.
+func (u *Updater) DeployingCount() int {
+	u.deployingMu.RLock()
+	defer u.deployingMu.RUnlock()
+	return len(u.deploying)
+}
+
 // Run starts the polling loop. Blocks until ctx is cancelled.
 func (u *Updater) Run(ctx context.Context) {
 	interval := time.Duration(u.cfg.Registry.PollInterval) * time.Second
@@ -239,7 +246,7 @@ func (u *Updater) pollAll(ctx context.Context) {
 			return
 		}
 		if svc.AutoUpdate {
-			if err := u.checkAndUpdate(ctx, svc); err != nil {
+			if err := u.checkAndUpdate(ctx, svc, false); err != nil {
 				u.handlePollError(ctx, svc, err)
 			}
 		}
@@ -291,7 +298,10 @@ func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) err
 	}
 
 	logger.Printf("[updater] %s: compose file changed, redeploying", svc.Name)
-	if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	u.tryStartDeploy(svc.Name)
+	defer u.clearDeploying(svc.Name)
+	composeOut, err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+	if err != nil {
 		return fmt.Errorf("compose up (drift): %w", err)
 	}
 
@@ -300,6 +310,7 @@ func (u *Updater) checkComposeDrift(ctx context.Context, svc config.Service) err
 		Event:   "compose_drift",
 		Message: "Compose file changed. Redeployed without image pull.",
 		Level:   "info",
+		Output:  composeOut,
 	}); werr != nil {
 		logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
 	}
@@ -340,6 +351,14 @@ func (u *Updater) handlePollError(ctx context.Context, svc config.Service, err e
 		Message: fmt.Sprintf("Poll error: %s", msg),
 		Level:   notify.LevelCritical,
 	})
+	if werr := u.audit.Write(audit.Entry{
+		Service: svc.Name,
+		Event:   "error",
+		Message: fmt.Sprintf("Poll error: %s", msg),
+		Level:   "critical",
+	}); werr != nil {
+		logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+	}
 }
 
 // handlePollErrorAlways logs error without suppression. Used for manual triggers.
@@ -381,6 +400,14 @@ func (u *Updater) clearPollError(svc config.Service) {
 	u.erroredMu.Unlock()
 
 	logger.Printf("[updater] %s: recovered from previous error", svc.Name)
+	if werr := u.audit.Write(audit.Entry{
+		Service: svc.Name,
+		Event:   "recovered",
+		Message: "Service recovered from previous poll error",
+		Level:   "info",
+	}); werr != nil {
+		logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+	}
 }
 
 // GetNextCheck returns the next scheduled check time for a service
@@ -428,7 +455,7 @@ func (u *Updater) updateLastChecked(serviceName string) {
 	u.lastCheckedMu.Unlock()
 }
 
-func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error {
+func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service, manual bool) error {
 	// Update check tracking
 	u.setCheckStatus(svc.Name, "checking")
 	defer func() {
@@ -481,7 +508,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 		}
 
 		// Step 2: Get local digest from Docker.
-		localDigest := u.resolveLocalDigestForImage(ctx, svc, registryPrefix, img)
+		localDigest, localSize := u.resolveLocalDigestForImage(ctx, svc, registryPrefix, img)
 		if localDigest == "" {
 			logger.Printf("[updater] %s/%s: no local digest resolved, suppressing until registry digest changes", svc.Name, img)
 			u.notFoundMu.Lock()
@@ -506,7 +533,7 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 
 		// Step 3: Compare.
 		if localDigest == remoteDigest {
-			u.setDeployedInfo(key, registryPrefix+":"+imageTag(img), localDigest)
+			u.setDeployedInfo(key, registryPrefix+":"+imageTag(img), localDigest, localSize)
 			if representativeDigest == "" {
 				representativeDigest = remoteDigest
 			}
@@ -529,11 +556,31 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 			delete(u.startAttempted, svc.Name)
 			u.startAttemptedMu.Unlock()
 			u.clearPollError(svc)
+			if manual {
+				if werr := u.audit.Write(audit.Entry{
+					Service: svc.Name,
+					Event:   "checked",
+					Message: "All images up to date",
+					Level:   "info",
+				}); werr != nil {
+					logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+				}
+			}
 			return nil
 		}
 
 		if !svc.AutoStart {
 			u.clearPollError(svc)
+			if manual {
+				if werr := u.audit.Write(audit.Entry{
+					Service: svc.Name,
+					Event:   "checked",
+					Message: "All images up to date (containers not running, auto_start disabled)",
+					Level:   "info",
+				}); werr != nil {
+					logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+				}
+			}
 			return nil
 		}
 
@@ -548,10 +595,13 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 		u.startAttempted[svc.Name] = representativeDigest
 		u.startAttemptedMu.Unlock()
 
+		u.tryStartDeploy(svc.Name)
+		defer u.clearDeploying(svc.Name)
 		switch status {
 		case containerStuck:
 			logger.Printf("[updater] %s: containers stuck (created/restarting), forcing down+up", svc.Name)
-			if err := compose.Restart(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+			composeOut, err := compose.Restart(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+			if err != nil {
 				return fmt.Errorf("compose restart (stuck containers): %w", err)
 			}
 			u.dispatcher.Send(ctx, notify.Alert{
@@ -560,9 +610,19 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 				Message: "Containers were stuck. Forced restart (down+up).",
 				Level:   notify.LevelWarning,
 			})
+			if werr := u.audit.Write(audit.Entry{
+				Service: svc.Name,
+				Event:   "started",
+				Message: "Containers were stuck. Forced restart (down+up).",
+				Level:   "warning",
+				Output:  composeOut,
+			}); werr != nil {
+				logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+			}
 		default:
 			logger.Printf("[updater] %s: images up to date but no containers, starting compose project", svc.Name)
-			if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+			composeOut, err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+			if err != nil {
 				return fmt.Errorf("compose up (no running container): %w", err)
 			}
 			u.dispatcher.Send(ctx, notify.Alert{
@@ -571,6 +631,15 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 				Message: "Images up to date but no containers found. Started compose project.",
 				Level:   notify.LevelWarning,
 			})
+			if werr := u.audit.Write(audit.Entry{
+				Service: svc.Name,
+				Event:   "started",
+				Message: "Images up to date but no containers found. Started compose project.",
+				Level:   "warning",
+				Output:  composeOut,
+			}); werr != nil {
+				logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
+			}
 		}
 		u.clearPollError(svc)
 		return nil
@@ -584,14 +653,14 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service) error 
 //  1. Inspect image by constructed reference (registryHost/name:tag).
 //  2. Fallback: find the running container by compose project label, get its
 //     image ID, inspect by ID, and extract digest from RepoDigests.
-func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Service, registryPrefix, img string) string {
+func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Service, registryPrefix, img string) (string, int64) {
 	fullImage := registryPrefix + ":" + imageTag(img)
 
 	// Strategy 1: direct image inspect by reference.
 	localImg, err := u.docker.InspectImage(ctx, fullImage)
 	if err == nil {
 		if d := localImg.LocalDigest(registryPrefix); d != "" {
-			return d
+			return d, localImg.Size
 		}
 		logger.Printf("[updater] %s/%s: image found by reference but no matching digest in RepoDigests", svc.Name, img)
 	} else {
@@ -602,29 +671,29 @@ func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Ser
 	container, status := u.findContainerByProject(ctx, svc.ComposeProject)
 	if status != containerRunning {
 		logger.Printf("[updater] %s/%s: no running container for fallback digest resolution", svc.Name, img)
-		return ""
+		return "", 0
 	}
 
 	info, err := u.docker.InspectContainer(ctx, container.ID)
 	if err != nil {
 		logger.Printf("[updater] %s/%s: container inspect failed during fallback: %v", svc.Name, img, err)
-		return ""
+		return "", 0
 	}
 
 	// ContainerInspect.Image is the image ID (sha256:...).
 	imgByID, err := u.docker.InspectImage(ctx, info.Image)
 	if err != nil {
 		logger.Printf("[updater] %s/%s: inspect image by ID %s failed: %v", svc.Name, img, info.Image, err)
-		return ""
+		return "", 0
 	}
 
 	if d := imgByID.LocalDigest(registryPrefix); d != "" {
 		logger.Printf("[updater] %s/%s: resolved digest via container fallback", svc.Name, img)
-		return d
+		return d, imgByID.Size
 	}
 
 	logger.Printf("[updater] %s/%s: fallback image has no matching RepoDigests for %s", svc.Name, img, registryPrefix)
-	return ""
+	return "", 0
 }
 
 func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imageChange) error {
@@ -669,22 +738,25 @@ func (u *Updater) deploy(ctx context.Context, svc config.Service, changed []imag
 
 	// Step 2: Pull new images and recreate via compose.
 	logger.Printf("[updater] %s: pulling and deploying", svc.Name)
-	if err := compose.Pull(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	pullOut, err := compose.Pull(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+	if err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose pull: %w", err)
 	}
-	if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	upOut, err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+	if err != nil {
 		u.clearDeploying(svc.Name)
 		return fmt.Errorf("compose up: %w", err)
 	}
+	composeOut := strings.TrimSpace(pullOut + "\n" + upOut)
 
 	// Step 3: Verify health asynchronously. clearDeploying is called via defer in verifyAfterDeploy.
-	go u.verifyAfterDeploy(ctx, svc, changed)
+	go u.verifyAfterDeploy(ctx, svc, changed, composeOut)
 
 	return nil
 }
 
-func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, changed []imageChange) {
+func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, changed []imageChange, composeOut string) {
 	defer u.clearDeploying(svc.Name)
 
 	grace := time.Duration(svc.HealthGrace) * time.Second
@@ -705,7 +777,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 		if cStatus == containerNone {
 			if time.Now().After(deadline) {
 				logger.Printf("[updater] %s: container not found after grace period, rolling back", svc.Name)
-				u.rollback(ctx, svc, changed, "container not found after deploy")
+				u.rollback(ctx, svc, changed, "container not found after deploy", composeOut)
 				return
 			}
 			continue // Container may be starting up.
@@ -715,7 +787,7 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 		if err != nil {
 			logger.Printf("[updater] %s: inspect failed during health poll: %v", svc.Name, err)
 			if time.Now().After(deadline) {
-				u.rollback(ctx, svc, changed, "inspect failed: "+err.Error())
+				u.rollback(ctx, svc, changed, "inspect failed: "+err.Error(), composeOut)
 				return
 			}
 			continue
@@ -724,11 +796,11 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 		// No healthcheck configured: success if running.
 		if info.State.Health == nil {
 			if info.State.Running {
-				u.onDeploySuccess(ctx, svc, changed, info.ContainerName(), info.Config.Image)
+				u.onDeploySuccess(ctx, svc, changed, info.ContainerName(), info.Config.Image, composeOut)
 				return
 			}
 			if time.Now().After(deadline) {
-				u.rollback(ctx, svc, changed, "container not running")
+				u.rollback(ctx, svc, changed, "container not running", composeOut)
 				return
 			}
 			continue
@@ -736,18 +808,18 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 
 		switch info.State.Health.Status {
 		case "healthy":
-			u.onDeploySuccess(ctx, svc, changed, info.ContainerName(), info.Config.Image)
+			u.onDeploySuccess(ctx, svc, changed, info.ContainerName(), info.Config.Image, composeOut)
 			return
 		case "unhealthy":
 			reason := info.LastHealthOutput()
 			logger.Printf("[updater] %s: unhealthy, rolling back immediately", svc.Name)
-			u.rollback(ctx, svc, changed, reason)
+			u.rollback(ctx, svc, changed, reason, composeOut)
 			return
 		default: // "starting" or other transient states
 			if time.Now().After(deadline) {
 				reason := info.LastHealthOutput()
 				logger.Printf("[updater] %s: still %s after grace period, rolling back", svc.Name, info.State.Health.Status)
-				u.rollback(ctx, svc, changed, reason)
+				u.rollback(ctx, svc, changed, reason, composeOut)
 				return
 			}
 			// Keep polling.
@@ -755,12 +827,12 @@ func (u *Updater) verifyAfterDeploy(ctx context.Context, svc config.Service, cha
 	}
 }
 
-func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, changed []imageChange, containerName, imageRef string) {
+func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, changed []imageChange, containerName, imageRef, composeOut string) {
 	logger.Printf("[updater] %s: deployed successfully", svc.Name)
 	u.metrics.IncUpdates(svc.Name)
 	u.metrics.SetHealthy(svc.Name, true)
 	for _, ch := range changed {
-		u.setDeployedInfo(svc.Name+"/"+ch.Image, imageRef, ch.NewDigest)
+		u.setDeployedInfo(svc.Name+"/"+ch.Image, imageRef, ch.NewDigest, 0) // size resolved next poll
 	}
 	u.dispatcher.Send(ctx, notify.Alert{
 		Service:   svc.Name,
@@ -779,13 +851,14 @@ func (u *Updater) onDeploySuccess(ctx context.Context, svc config.Service, chang
 		OldDigest: changed[0].OldDigest,
 		NewDigest: changed[0].NewDigest,
 		Container: containerName,
+		Output:    composeOut,
 	}); err != nil {
 		logger.Printf("[updater] %s: audit write error: %v", svc.Name, err)
 	}
 	u.cleanupRollbacks(ctx, changed)
 }
 
-func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []imageChange, reason string) {
+func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []imageChange, reason string, composeOut string) {
 	logger.Printf("[updater] %s: rolling back. Reason: %s", svc.Name, reason)
 	u.metrics.IncRollbacks(svc.Name)
 	u.metrics.SetHealthy(svc.Name, false)
@@ -842,13 +915,16 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 			OldDigest: changed[0].OldDigest,
 			NewDigest: changed[0].NewDigest,
 			Reason:    reason,
+			Output:    composeOut,
 		}); werr != nil {
 			logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
 		}
 		return
 	}
 
-	if err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile); err != nil {
+	rollbackOut, err := compose.Up(ctx, u.cfg.Runtime, svc.ComposeFiles, svc.ComposeProject, svc.EnvFile)
+	allOut := strings.TrimSpace(composeOut + "\n" + rollbackOut)
+	if err != nil {
 		logger.Printf("[updater] %s: rollback compose up failed: %v", svc.Name, err)
 		u.metrics.IncFailures(svc.Name)
 		u.dispatcher.Send(ctx, notify.Alert{
@@ -868,6 +944,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 			OldDigest: changed[0].OldDigest,
 			NewDigest: changed[0].NewDigest,
 			Reason:    reason,
+			Output:    allOut,
 		}); werr != nil {
 			logger.Printf("[updater] %s: audit write error: %v", svc.Name, werr)
 		}
@@ -891,6 +968,7 @@ func (u *Updater) rollback(ctx context.Context, svc config.Service, changed []im
 		OldDigest: changed[0].OldDigest,
 		NewDigest: changed[0].NewDigest,
 		Reason:    reason,
+		Output:    allOut,
 	}); err != nil {
 		logger.Printf("[updater] %s: audit write error: %v", svc.Name, err)
 	}
@@ -978,12 +1056,23 @@ func (u *Updater) serviceContainerInfos(ctx context.Context, project string) []C
 		if len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
+		var mounts []MountInfo
+		for _, m := range c.Mounts {
+			mounts = append(mounts, MountInfo{
+				Type:        m.Type,
+				Name:        m.Name,
+				Source:      m.Source,
+				Destination: m.Destination,
+				ReadOnly:    !m.RW,
+			})
+		}
 		result = append(result, ContainerInfo{
 			ID:     c.ID,
 			Name:   name,
 			State:  c.State,
 			Status: c.Status,
 			Image:  c.Image,
+			Mounts: mounts,
 		})
 	}
 	return result
@@ -1001,6 +1090,7 @@ type imageChange struct {
 type DeployedInfo struct {
 	Image  string // full image reference from container (e.g. localhost:5000/myapp:latest)
 	Digest string // full digest (displayed as shortDigest in the UI)
+	Size   int64  // uncompressed image size in bytes (from docker image inspect)
 }
 
 // containerStatus describes the state of containers in a compose project.
@@ -1012,11 +1102,11 @@ const (
 	containerRunning                        // At least one container is running or exited
 )
 
-// setDeployedInfo stores the deployed image reference and digest for a service image key.
+// setDeployedInfo stores the deployed image reference, digest, and size for a service image key.
 // key format: "service/image" (e.g. "myapp/api:latest")
-func (u *Updater) setDeployedInfo(key, image, digest string) {
+func (u *Updater) setDeployedInfo(key, image, digest string, size int64) {
 	u.deployedMu.Lock()
-	u.deployed[key] = DeployedInfo{Image: image, Digest: digest}
+	u.deployed[key] = DeployedInfo{Image: image, Digest: digest, Size: size}
 	u.deployedMu.Unlock()
 }
 

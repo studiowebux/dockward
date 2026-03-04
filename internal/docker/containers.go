@@ -15,6 +15,7 @@ type Container struct {
 	Labels map[string]string `json:"Labels"`
 	State  string            `json:"State"`
 	Status string            `json:"Status"`
+	Mounts []MountPoint      `json:"Mounts"`
 }
 
 // ContainerInspect is the full container detail (from inspect endpoint).
@@ -24,6 +25,16 @@ type ContainerInspect struct {
 	Image  string          `json:"Image"`
 	State  ContainerState  `json:"State"`
 	Config ContainerConfig `json:"Config"`
+	Mounts []MountPoint    `json:"Mounts"`
+}
+
+// MountPoint describes a volume/bind mount on a container.
+type MountPoint struct {
+	Type        string `json:"Type"`        // bind, volume, tmpfs
+	Name        string `json:"Name"`        // volume name (empty for binds)
+	Source      string `json:"Source"`       // host path
+	Destination string `json:"Destination"` // container path
+	RW          bool   `json:"RW"`
 }
 
 // ContainerState holds the runtime state including health.

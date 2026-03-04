@@ -201,8 +201,14 @@ Example response:
       "rollbacks_total": 0,
       "restarts_total": 1,
       "failures_total": 0,
-      "image": "myapp:latest",
-      "image_digest": "sha256:abc123...",
+      "images": [
+        {
+          "image": "localhost:5000/myapp:latest",
+          "digest": "sha256:abc123def456...",
+          "short": "sha256:abc123def45",
+          "size_mb": 142
+        }
+      ],
       "containers": [
         {
           "id": "abc123def456",
@@ -210,6 +216,15 @@ Example response:
           "state": "running",
           "status": "Up 2 hours (healthy)",
           "image": "myapp:latest",
+          "mounts": [
+            {
+              "type": "volume",
+              "name": "myapp_data",
+              "source": "/var/lib/docker/volumes/myapp_data/_data",
+              "destination": "/data",
+              "read_only": false
+            }
+          ],
           "cpu_percent": 1.2,
           "memory_percent": 15.3,
           "memory_usage_mb": 153.2,
@@ -244,9 +259,19 @@ Example response:
 
 - `blocked`, `not_found`, `errored` — omitted from JSON when empty
 - `healthy` — omitted until the healer receives a Docker health event
-- `image`, `image_digest` — omitted until first successful deploy or poll cycle
+- `images` — array of deployed images for the service, omitted until first successful poll cycle
+  - `images[].image` — full image reference (e.g. `localhost:5000/myapp:latest`)
+  - `images[].digest` — full digest string (`sha256:...`)
+  - `images[].short` — truncated digest for display (first 19 chars)
+  - `images[].size_mb` — uncompressed local image size in megabytes, omitted if zero
 - `containers` — omitted for services with no `compose_project` or `silent: true`
   - `containers[].id` — Docker container ID (full, not short)
+  - `containers[].mounts` — volume and bind mounts on the container, omitted if none
+    - `type` — `volume`, `bind`, or `tmpfs`
+    - `name` — volume name (empty for bind mounts)
+    - `source` — host path
+    - `destination` — container path
+    - `read_only` — `true` if mounted read-only
   - `containers[].cpu_percent`, `memory_percent`, `memory_usage_mb`, `memory_limit_mb` — per-container stats, omitted if monitor hasn't polled yet
 - `has_stats` — `false` until the first monitor poll cycle (service-level aggregated stats)
 - `cpu_percent`, `memory_percent`, `memory_usage_mb`, `memory_limit_mb` — service-level aggregated stats across all containers

@@ -8,7 +8,27 @@ import (
 	"time"
 
 	"github.com/studiowebux/dockward/internal/hub"
+	"github.com/studiowebux/dockward/internal/logger"
 )
+
+// sendStatus marshals and writes a status SSE event to the client.
+func (a *API) sendStatus(w http.ResponseWriter, flusher http.Flusher) {
+	snap := a.stateSnapshot(context.Background())
+	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
+	for _, svc := range a.updater.cfg.Services {
+		services = append(services, a.buildServiceStatus(svc, snap))
+	}
+
+	status := map[string]interface{}{
+		"services":       services,
+		"uptime_seconds": a.metrics.Meta().UptimeSeconds,
+	}
+
+	if statusData, err := json.Marshal(status); err == nil {
+		fmt.Fprintf(w, "event: status\ndata: %s\n\n", statusData)
+		flusher.Flush()
+	}
+}
 
 // handleUIStream serves SSE endpoint for data-star UI
 func (a *API) handleUIStream(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +49,13 @@ func (a *API) handleUIStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear the server-level WriteTimeout so this long-lived connection is not
+	// killed after 30 s. Uses ResponseController (Go 1.20+).
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		logger.Printf("[api] ui/stream: could not clear write deadline: %v", err)
+	}
+
 	// Extract client IP for connection limiting
 	clientIP := hub.ExtractClientIP(r)
 
@@ -44,20 +71,20 @@ func (a *API) handleUIStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer a.hub.Unsubscribe(ch)
 
+	// Subscribe to status-refresh notifications
+	statusCh := a.subscribeStatus()
+	defer a.unsubscribeStatus(statusCh)
+
 	// Send initial status
-	snap := a.stateSnapshot(r.Context())
-	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
-	for _, svc := range a.updater.cfg.Services {
-		services = append(services, a.buildServiceStatus(svc, snap))
-	}
+	a.sendStatus(w, flusher)
 
-	status := map[string]interface{}{
-		"services": services,
-		"uptime":   a.metrics.Meta().UptimeSeconds,
-	}
-
-	if statusData, err := json.Marshal(status); err == nil {
-		fmt.Fprintf(w, "event: status\ndata: %s\n\n", statusData)
+	// Send recent audit events so the UI is populated on refresh (F5)
+	if recent, err := a.audit.Recent(50); err == nil && len(recent) > 0 {
+		for _, entry := range recent {
+			if data, err := json.Marshal(entry); err == nil {
+				fmt.Fprintf(w, "event: audit\ndata: %s\n\n", data)
+			}
+		}
 		flusher.Flush()
 	}
 
@@ -83,23 +110,13 @@ func (a *API) handleUIStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "event: audit\ndata: %s\n\n", msg)
 			flusher.Flush()
 
+		case <-statusCh:
+			// State changed — push fresh status immediately
+			a.sendStatus(w, flusher)
+
 		case <-ticker.C:
-			// Send periodic status update
-			snap := a.stateSnapshot(context.Background())
-			services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
-			for _, svc := range a.updater.cfg.Services {
-				services = append(services, a.buildServiceStatus(svc, snap))
-			}
-
-			status := map[string]interface{}{
-				"services": services,
-				"uptime":   a.metrics.Meta().UptimeSeconds,
-			}
-
-			if statusData, err := json.Marshal(status); err == nil {
-				fmt.Fprintf(w, "event: status\ndata: %s\n\n", statusData)
-				flusher.Flush()
-			}
+			// Periodic status refresh (fallback)
+			a.sendStatus(w, flusher)
 
 		case <-heartbeat.C:
 			// Keep connection alive
