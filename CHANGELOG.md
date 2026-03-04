@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.15] - 2026-03-04
+
+### Fixed
+- **Health:** Status stuck at "unknown" after compose drift, auto-start, and force redeploy — added `verifyHealthAfterCompose()` to all compose paths
+
+### Changed
+- **BREAKING:** `api.address` is now `[]string` (was `string` + `port`). Migrate: `{"address":"0.0.0.0","port":9090}` → `{"address":["0.0.0.0:9090"]}`
+- Support multiple listen addresses (one HTTP server per address, shared mux, graceful shutdown)
+
 ## [1.0.0-alpha.13] - 2026-03-03
 
 ### Fixed
