@@ -30,7 +30,13 @@ type API struct {
 	hub            *hub.Hub
 	dockerHealth   *docker.HealthChecker
 	configWarnings []string // Invalid services from config validation
+	configPath     string   // Path to config file for write-back on mutations
 	servers        []*http.Server // one per listen address, all share the same mux
+
+	// cfgMu guards config mutations made via the config API endpoints.
+	// Running goroutines (updater, healer, monitor) share the same *config.Config
+	// pointer — mutations under this lock are visible to all components.
+	cfgMu sync.RWMutex
 
 	// statusMu guards statusSubs — the set of channels notified when service
 	// state changes (audit entry written → status should be re-pushed to SSE).
@@ -136,8 +142,9 @@ func (b *broadcaster) Broadcast(e audit.Entry) {
 
 // NewAPI creates the trigger/metrics API on the given addresses.
 // Each address is a "host:port" string; one http.Server is created per address,
-// all sharing the same handler mux.
-func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, configWarnings []string, addresses []string) *API {
+// all sharing the same handler mux. configPath is the file path used by the
+// config mutation endpoints to persist changes to disk.
+func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor, al *audit.Logger, dockerHealth *docker.HealthChecker, configWarnings []string, addresses []string, configPath string) *API {
 	h := hub.NewHub()
 	bc := &broadcaster{hub: h}
 	al.WithBroadcast(bc)
@@ -165,6 +172,7 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 		audit:          al,
 		dockerHealth:   dockerHealth,
 		configWarnings: configWarnings,
+		configPath:     configPath,
 		hub:            h,
 		statusSubs:     make(map[chan struct{}]struct{}),
 		servers:        servers,
@@ -196,6 +204,16 @@ func NewAPI(updater *Updater, healer *Healer, metrics *Metrics, monitor *Monitor
 	// SSE endpoints - no timeout (long-lived connections)
 	mux.HandleFunc("/ui/events", withTimeout(api.handleUIEvents, sseTimeout))
 	mux.HandleFunc("/ui/stream", withTimeout(api.handleUIStream, sseTimeout))
+
+	// Config API — read and mutate the running config, persisted to disk.
+	// /config/download and /config/services/ must be registered before /config
+	// so the more-specific patterns take precedence.
+	mux.HandleFunc("/config/download", withTimeout(api.handleConfigDownload, defaultTimeout))
+	mux.HandleFunc("/config/services/", limitRequestBody(withTimeout(api.handleConfigService, defaultTimeout), maxRequestBodySize))
+	mux.HandleFunc("/config/registry", limitRequestBody(withTimeout(api.handlePutRegistry, defaultTimeout), maxRequestBodySize))
+	mux.HandleFunc("/config/monitor", limitRequestBody(withTimeout(api.handlePutMonitor, defaultTimeout), maxRequestBodySize))
+	mux.HandleFunc("/config/notifications", limitRequestBody(withTimeout(api.handlePutNotifications, defaultTimeout), maxRequestBodySize))
+	mux.HandleFunc("/config", withTimeout(api.handleGetConfig, defaultTimeout))
 
 	return api
 }
@@ -888,20 +906,6 @@ func (a *API) handleUnblockPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }
 
-// formatUptime converts a duration in seconds to a human-readable string.
-func formatUptime(seconds int64) string {
-	days := seconds / 86400
-	hours := (seconds % 86400) / 3600
-	minutes := (seconds % 3600) / 60
-	switch {
-	case days > 0:
-		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
-	case hours > 0:
-		return fmt.Sprintf("%dh %dm", hours, minutes)
-	default:
-		return fmt.Sprintf("%dm", minutes)
-	}
-}
 
 
 const dataStarHTML = `<!DOCTYPE html>
@@ -931,6 +935,10 @@ const dataStarHTML = `<!DOCTYPE html>
       --error: #ef5350;
       --warning: #ffa726;
       --info: #42a5f5;
+      --success-text: #fff;
+      --error-text: #fff;
+      --info-text: #fff;
+      --warning-text: #000;
     }
     [data-theme="light"] {
       --bg: #f5f5f5;
@@ -944,6 +952,10 @@ const dataStarHTML = `<!DOCTYPE html>
       --error: #c62828;
       --warning: #e65100;
       --info: #1565c0;
+      --success-text: #fff;
+      --error-text: #fff;
+      --info-text: #fff;
+      --warning-text: #fff;
     }
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
@@ -972,14 +984,14 @@ const dataStarHTML = `<!DOCTYPE html>
 
     /* Badge */
     .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:0.8rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; }
-    .badge.ok { background:var(--success); color:#fff; }
+    .badge.ok { background:var(--success); color:var(--success-text); }
     .badge.unknown { background:var(--surface2); color:var(--text-dim); }
-    .badge.unhealthy, .badge.degraded, .badge.exhausted, .badge.errored { background:var(--error); color:#fff; }
-    .badge.deploying { background:var(--info); color:#fff; }
-    .badge.blocked, .badge.not_found { background:var(--warning); color:#000; }
-    .badge.info { background:var(--info); color:#fff; }
-    .badge.warning { background:var(--warning); color:#000; }
-    .badge.error, .badge.critical { background:var(--error); color:#fff; }
+    .badge.unhealthy, .badge.degraded, .badge.exhausted, .badge.errored { background:var(--error); color:var(--error-text); }
+    .badge.deploying { background:var(--info); color:var(--info-text); }
+    .badge.blocked, .badge.not_found { background:var(--warning); color:var(--warning-text); }
+    .badge.info { background:var(--info); color:var(--info-text); }
+    .badge.warning { background:var(--warning); color:var(--warning-text); }
+    .badge.error, .badge.critical { background:var(--error); color:var(--error-text); }
 
     /* Tooltip */
     [data-tip] { position:relative; cursor:help; }
@@ -1091,11 +1103,23 @@ const dataStarHTML = `<!DOCTYPE html>
 (function(){
   var events = [];
   var MAX_EVENTS = 50;
+  var lastServices = [];
 
   // ---- helpers ----
   function esc(s) {
     if (s == null) return '';
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function fmtCountdown(ts) {
+    if (!ts) return '--';
+    var d = new Date(ts) - Date.now();
+    if (d <= 0) return 'now';
+    var s = Math.round(d / 1000);
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60), rs = s % 60;
+    if (m < 60) return m + 'm ' + (rs < 10 ? '0' : '') + rs + 's';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
   }
 
   function fmtTime(ts) {
@@ -1106,6 +1130,21 @@ const dataStarHTML = `<!DOCTYPE html>
     if (d < 3600000) return Math.round(d/60000) + 'm';
     return Math.round(d/3600000) + 'h';
   }
+
+  // ---- countdown ticker — updates Next column every second without full re-render ----
+  function tickCountdowns() {
+    for (var i = 0; i < lastServices.length; i++) {
+      var el = document.getElementById('next-' + i);
+      if (!el) continue;
+      var s = lastServices[i];
+      if (s.check_status === 'checking') {
+        el.innerHTML = '<span style="color:var(--warning)">checking</span>';
+      } else {
+        el.innerHTML = '<span style="color:var(--text-dim)">' + fmtCountdown(s.next_check) + '</span>';
+      }
+    }
+  }
+  setInterval(tickCountdowns, 1000);
 
   function flagHtml(label, on) {
     return '<span class="flag ' + (on ? 'on' : 'off') + '" data-tip="' + esc(label) + '">' + esc(label.charAt(0)) + '</span>';
@@ -1126,6 +1165,7 @@ const dataStarHTML = `<!DOCTYPE html>
 
   // ---- render services ----
   function renderServices(services) {
+    lastServices = services || [];
     var tb = document.getElementById('svc-body');
     if (!services || !services.length) {
       tb.innerHTML = '<tr><td colspan="6" class="empty">No services</td></tr>';
@@ -1202,12 +1242,12 @@ const dataStarHTML = `<!DOCTYPE html>
       html += flagHtml('Start', s.auto_start);
       html += '</div></td>';
 
-      // Next check
-      html += '<td>';
+      // Next check — id used by tickCountdowns() for in-place updates
+      html += '<td id="next-' + i + '">';
       if (isChecking) {
         html += '<span style="color:var(--warning)">checking</span>';
       } else {
-        html += '<span style="color:var(--text-dim)">' + fmtTime(s.next_check) + '</span>';
+        html += '<span style="color:var(--text-dim)">' + fmtCountdown(s.next_check) + '</span>';
       }
       html += '</td>';
 
