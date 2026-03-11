@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-03-11
+
+### Added
+- **Config API:** 7 new REST endpoints to read and mutate the running config at runtime with atomic disk write-back (`GET /config`, `GET /config/download`, `PUT /config/registry`, `PUT /config/monitor`, `PUT /config/notifications`, `PUT /config/services/{name}`, `DELETE /config/services/{name}`)
+- **`GET /config/download`:** Downloads the current in-memory config as a `dockward-config.json` attachment — useful for snapshotting runtime state
+- **Countdown timers:** "Next check" column now ticks live every second via `setInterval` without waiting for an SSE event; uses `mm:ss` precision format
+
+### Fixed
+- **Web UI:** Warning badge pill in light theme showed unreadable black text on dark orange — all badge pills now use CSS variables (`--success-text`, `--error-text`, `--info-text`, `--warning-text`) for consistent theming across light and dark modes
+
+### Changed
+- `NewAPI` now accepts a `configPath string` parameter for config write-back
+- All badge text colors use CSS variables (`--X-text`) instead of hardcoded `#fff`/`#000`
+
 ## [1.0.0-alpha.15] - 2026-03-04
 
 ### Fixed
