@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-03-11
+
+### Added
+- **Web UI config panel:** Interactive config editor at `/ui` with accordion sections for Registry (URL, poll_interval, insecure), Monitor (stats_interval), Notifications (Discord webhook URL), and Services — lists all services with U/H/S flags and per-service Edit and Delete actions
+
 ## [1.1.0] - 2026-03-11
 
 ### Added
@@ -289,7 +294,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd service unit
 - Version flag (`-version`) with build-time injection via ldflags
 
-[Unreleased]: https://github.com/studiowebux/dockward/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/studiowebux/dockward/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/studiowebux/dockward/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.15...v1.1.0
+[1.0.0-alpha.15]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.13...v1.0.0-alpha.15
+[1.0.0-alpha.13]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.12...v1.0.0-alpha.13
+[1.0.0-alpha.12]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.11...v1.0.0-alpha.12
+[1.0.0-alpha.11]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.10...v1.0.0-alpha.11
+[1.0.0-alpha.10]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.9...v1.0.0-alpha.10
+[1.0.0-alpha.9]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.8...v1.0.0-alpha.9
+[1.0.0-alpha.8]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.7...v1.0.0-alpha.8
+[1.0.0-alpha.7]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.6...v1.0.0-alpha.7
+[1.0.0-alpha.6]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.5...v1.0.0-alpha.6
+[1.0.0-alpha.5]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.4...v1.0.0-alpha.5
+[1.0.0-alpha.4]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.3...v1.0.0-alpha.4
+[1.0.0-alpha.3]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.2...v1.0.0-alpha.3
+[1.0.0-alpha.2]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.1...v1.0.0-alpha.2
+[1.0.0-alpha.1]: https://github.com/studiowebux/dockward/compare/v0.5.0...v1.0.0-alpha.1
 [0.5.0]: https://github.com/studiowebux/dockward/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/studiowebux/dockward/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/studiowebux/dockward/compare/v0.2.2...v0.3.0
