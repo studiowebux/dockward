@@ -3,7 +3,6 @@ package saferun
 
 import (
 	"context"
-	"fmt"
 	"runtime/debug"
 
 	"github.com/studiowebux/dockward/internal/logger"
@@ -88,6 +87,6 @@ func WrapError(name string, fn func() error) func() error {
 // Usage: defer saferun.MustRecover("component-name")
 func MustRecover(name string) {
 	if r := recover(); r != nil {
-		logger.Critical("[%s] panic recovered: %v\n%s", name, r, fmt.Sprintf("%s", debug.Stack()))
+		logger.Critical("[%s] panic recovered: %v\n%s", name, r, debug.Stack())
 	}
 }

@@ -140,7 +140,7 @@ func main() {
 	}
 	metrics.SetInvalidServicesCount(len(cfg.InvalidServices))
 
-	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, dockerHealth, configWarnings, cfg.API.Address)
+	api := watcher.NewAPI(updater, healer, metrics, monitor, auditLog, dockerHealth, configWarnings, cfg.API.Address, *configPath)
 
 	// Create shutdown coordinator and register managers
 	coordinator := shutdown.NewCoordinator()
