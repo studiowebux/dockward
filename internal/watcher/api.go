@@ -1047,6 +1047,40 @@ const dataStarHTML = `<!DOCTYPE html>
 
     /* Empty state */
     .empty { text-align:center; padding:2rem; color:var(--text-faint); font-size:0.9rem; }
+
+    /* Config section */
+    .cfg-msg { min-height:1.4rem; font-size:0.85rem; margin-bottom:0.5rem; }
+    .cfg-msg.ok { color:var(--success); }
+    .cfg-msg.error { color:var(--error); }
+    .cfg-accordion { border:1px solid var(--border); border-radius:3px; margin-bottom:0.4rem; }
+    .cfg-accordion-btn { width:100%; text-align:left; padding:0.45rem 0.75rem; background:var(--surface); border:none; color:var(--text); font-family:inherit; font-size:0.85rem; font-weight:600; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
+    .cfg-accordion-btn:hover { background:var(--surface2); }
+    .cfg-accordion-body { padding:0.75rem; border-top:1px solid var(--border); }
+    .form-row { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.5rem; }
+    .form-group { display:flex; flex-direction:column; gap:0.2rem; flex:1; min-width:140px; }
+    .form-group.full { flex-basis:100%; min-width:100%; }
+    .form-label { font-size:0.78rem; color:var(--text-dim); }
+    .form-input { background:var(--surface); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:3px; font-family:inherit; font-size:0.85rem; }
+    .form-input:focus { outline:none; border-color:var(--text-dim); }
+    textarea.form-input { resize:vertical; min-height:64px; }
+    .form-check { flex-direction:row !important; align-items:center; gap:0.4rem; min-width:auto; flex:none; }
+    .form-check input[type=checkbox] { accent-color:var(--info); width:14px; height:14px; flex-shrink:0; }
+    .cfg-svc-title { display:flex; justify-content:space-between; align-items:center; margin:0.9rem 0 0.4rem; }
+    .cfg-svc-label { font-size:0.8rem; font-weight:600; text-transform:uppercase; letter-spacing:1.5px; color:var(--text-dim); }
+    .field-group-label { font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:1px; color:var(--text-faint); margin:0.65rem 0 0.25rem; }
+
+    /* Modal */
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:100; display:flex; align-items:center; justify-content:center; }
+    .modal-overlay.hidden { display:none; }
+    .modal-box { background:var(--surface); border:1px solid var(--border); border-radius:4px; width:min(680px, 95vw); max-height:88vh; display:flex; flex-direction:column; }
+    .modal-header { display:flex; justify-content:space-between; align-items:center; padding:0.65rem 1rem; border-bottom:1px solid var(--border); }
+    .modal-header h3 { font-size:0.95rem; font-weight:600; }
+    .modal-close { background:none; border:none; color:var(--text-dim); font-size:1.3rem; cursor:pointer; line-height:1; padding:0 4px; font-family:inherit; }
+    .modal-close:hover { color:var(--text); }
+    .modal-body { padding:1rem; overflow-y:auto; flex:1; }
+    .modal-footer { padding:0.65rem 1rem; border-top:1px solid var(--border); display:flex; gap:0.5rem; justify-content:flex-end; }
+    .btn-primary { background:var(--info); color:var(--info-text); border-color:var(--info); }
+    .btn-primary:hover { background:var(--info); filter:brightness(1.1); }
   </style>
 </head>
 <body>
@@ -1097,6 +1131,156 @@ const dataStarHTML = `<!DOCTYPE html>
       </tbody>
     </table>
   </section>
+  <section>
+    <h2>Config</h2>
+    <div id="cfg-msg" class="cfg-msg"></div>
+
+    <div class="cfg-accordion">
+      <button class="cfg-accordion-btn" onclick="toggleCfgSection('cfg-registry')"><span>Registry</span><span>&#9662;</span></button>
+      <div id="cfg-registry" class="cfg-accordion-body hidden">
+        <div class="form-row">
+          <div class="form-group" style="flex:2">
+            <label class="form-label" for="reg-url">URL</label>
+            <input id="reg-url" type="text" class="form-input" placeholder="http://localhost:5000">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-interval">Poll Interval (s)</label>
+            <input id="reg-interval" type="number" class="form-input" min="10" max="86400" placeholder="300">
+          </div>
+          <div class="form-group form-check" style="align-self:flex-end;padding-bottom:2px">
+            <input id="reg-insecure" type="checkbox">
+            <label class="form-label" for="reg-insecure">Skip TLS</label>
+          </div>
+        </div>
+        <button class="btn" onclick="saveRegistry()">Save Registry</button>
+      </div>
+    </div>
+
+    <div class="cfg-accordion">
+      <button class="cfg-accordion-btn" onclick="toggleCfgSection('cfg-monitor')"><span>Monitor</span><span>&#9662;</span></button>
+      <div id="cfg-monitor" class="cfg-accordion-body hidden">
+        <div class="form-row">
+          <div class="form-group" style="max-width:220px">
+            <label class="form-label" for="mon-interval">Stats Interval (s) &mdash; 0 = use poll interval</label>
+            <input id="mon-interval" type="number" class="form-input" min="0" placeholder="0">
+          </div>
+        </div>
+        <button class="btn" onclick="saveMonitor()">Save Monitor</button>
+      </div>
+    </div>
+
+    <div class="cfg-accordion">
+      <button class="cfg-accordion-btn" onclick="toggleCfgSection('cfg-notifications')"><span>Notifications</span><span>&#9662;</span></button>
+      <div id="cfg-notifications" class="cfg-accordion-body hidden">
+        <div class="form-row">
+          <div class="form-group full">
+            <label class="form-label" for="notif-discord-url">Discord Webhook URL</label>
+            <input id="notif-discord-url" type="text" class="form-input" placeholder="https://discord.com/api/webhooks/...">
+          </div>
+        </div>
+        <button class="btn" onclick="saveNotifications()">Save Notifications</button>
+      </div>
+    </div>
+
+    <div class="cfg-svc-title">
+      <span class="cfg-svc-label">Services</span>
+      <button class="btn" onclick="openServiceModal(null)">+ Add Service</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Images</th>
+          <th data-tip="Auto Update / Auto Heal / Auto Start">Config</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="cfg-svc-body">
+        <tr><td colspan="4" class="empty">Loading...</td></tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<div id="svc-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="svc-modal-title">Add Service</h3>
+      <button class="modal-close" onclick="closeServiceModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-group-label">Identity</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-name">Name *</label>
+          <input id="svc-name" type="text" class="form-input" placeholder="my-app">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-compose-project">Compose Project</label>
+          <input id="svc-compose-project" type="text" class="form-input" placeholder="my-app">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-container-name">Container Name</label>
+          <input id="svc-container-name" type="text" class="form-input" placeholder="my-app-1">
+        </div>
+      </div>
+      <div class="field-group-label">Images &amp; Files</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-images">Images (one per line)</label>
+          <textarea id="svc-images" class="form-input" placeholder="localhost:5000/my-app:latest"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-compose-files">Compose Files (one per line, absolute paths)</label>
+          <textarea id="svc-compose-files" class="form-input" placeholder="/opt/my-app/docker-compose.yml"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group full">
+          <label class="form-label" for="svc-env-file">Env File (absolute path)</label>
+          <input id="svc-env-file" type="text" class="form-input" placeholder="/opt/my-app/.env">
+        </div>
+      </div>
+      <div class="field-group-label">Behaviour</div>
+      <div class="form-row" style="flex-wrap:wrap;gap:0.75rem 1.25rem">
+        <div class="form-group form-check"><input id="svc-auto-update" type="checkbox"><label class="form-label" for="svc-auto-update">Auto Update</label></div>
+        <div class="form-group form-check"><input id="svc-auto-heal" type="checkbox"><label class="form-label" for="svc-auto-heal">Auto Heal</label></div>
+        <div class="form-group form-check"><input id="svc-auto-start" type="checkbox"><label class="form-label" for="svc-auto-start">Auto Start</label></div>
+        <div class="form-group form-check"><input id="svc-compose-watch" type="checkbox"><label class="form-label" for="svc-compose-watch">Compose Watch</label></div>
+        <div class="form-group form-check"><input id="svc-silent" type="checkbox"><label class="form-label" for="svc-silent">Silent</label></div>
+      </div>
+      <div class="field-group-label">Timing</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-health-grace">Health Grace (s)</label>
+          <input id="svc-health-grace" type="number" class="form-input" min="0" value="60">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-heal-cooldown">Heal Cooldown (s)</label>
+          <input id="svc-heal-cooldown" type="number" class="form-input" min="0" value="300">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-heal-max-restarts">Max Restarts</label>
+          <input id="svc-heal-max-restarts" type="number" class="form-input" min="0" value="3">
+        </div>
+      </div>
+      <div class="field-group-label">Thresholds (0 = disabled)</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-cpu-threshold">CPU % Alert</label>
+          <input id="svc-cpu-threshold" type="number" class="form-input" min="0" max="100" step="0.1" value="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-memory-threshold">Memory % Alert</label>
+          <input id="svc-memory-threshold" type="number" class="form-input" min="0" max="100" step="0.1" value="0">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeServiceModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveService()">Save</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1397,6 +1581,206 @@ const dataStarHTML = `<!DOCTYPE html>
   };
   updateThemeBtn();
 
+  // ---- config management ----
+  var currentConfig = null;
+  var editingServiceName = null;
+
+  function loadConfig() {
+    fetch('/config')
+      .then(function(r) { return r.json(); })
+      .then(function(cfg) {
+        currentConfig = cfg;
+        renderConfigServices(cfg.services || []);
+        populateRegistryForm(cfg.registry || {});
+        populateMonitorForm(cfg.monitor || {});
+        populateNotificationsForm(cfg.notifications || {});
+      })
+      .catch(function(e) { console.error('config load error:', e); });
+  }
+
+  function renderConfigServices(services) {
+    var tb = document.getElementById('cfg-svc-body');
+    if (!services || !services.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="empty">No services configured</td></tr>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < services.length; i++) {
+      var s = services[i];
+      html += '<tr>';
+      html += '<td><strong>' + esc(s.name) + '</strong></td>';
+      html += '<td style="font-size:0.8rem;color:var(--text-dim)">' + esc((s.images || []).join(', ')) + '</td>';
+      html += '<td><div class="flags">' + flagHtml('Update', s.auto_update) + flagHtml('Heal', s.auto_heal) + flagHtml('Start', s.auto_start) + '</div></td>';
+      html += '<td><div class="actions">';
+      html += '<button class="btn" onclick="openServiceModal(\'' + esc(s.name) + '\')">Edit</button>';
+      html += '<button class="btn" onclick="deleteService(\'' + esc(s.name) + '\')">Delete</button>';
+      html += '</div></td>';
+      html += '</tr>';
+    }
+    tb.innerHTML = html;
+  }
+
+  function populateRegistryForm(reg) {
+    document.getElementById('reg-url').value = reg.url || '';
+    document.getElementById('reg-interval').value = reg.poll_interval || 300;
+    document.getElementById('reg-insecure').checked = !!reg.insecure;
+  }
+
+  function populateMonitorForm(mon) {
+    document.getElementById('mon-interval').value = mon.stats_interval || 0;
+  }
+
+  function populateNotificationsForm(notif) {
+    document.getElementById('notif-discord-url').value = (notif && notif.discord && notif.discord.webhook_url) || '';
+  }
+
+  window.toggleCfgSection = function(id) {
+    document.getElementById(id).classList.toggle('hidden');
+  };
+
+  window.openServiceModal = function(name) {
+    editingServiceName = name || null;
+    document.getElementById('svc-modal-title').textContent = name ? 'Edit Service' : 'Add Service';
+    var nameInput = document.getElementById('svc-name');
+    nameInput.disabled = !!name;
+
+    // reset
+    document.getElementById('svc-images').value = '';
+    document.getElementById('svc-compose-files').value = '';
+    document.getElementById('svc-compose-project').value = '';
+    document.getElementById('svc-container-name').value = '';
+    document.getElementById('svc-env-file').value = '';
+    document.getElementById('svc-auto-update').checked = false;
+    document.getElementById('svc-auto-heal').checked = false;
+    document.getElementById('svc-auto-start').checked = false;
+    document.getElementById('svc-compose-watch').checked = false;
+    document.getElementById('svc-silent').checked = false;
+    document.getElementById('svc-health-grace').value = 60;
+    document.getElementById('svc-heal-cooldown').value = 300;
+    document.getElementById('svc-heal-max-restarts').value = 3;
+    document.getElementById('svc-cpu-threshold').value = 0;
+    document.getElementById('svc-memory-threshold').value = 0;
+
+    if (name && currentConfig) {
+      var svc = null;
+      for (var i = 0; i < (currentConfig.services || []).length; i++) {
+        if (currentConfig.services[i].name === name) { svc = currentConfig.services[i]; break; }
+      }
+      if (svc) {
+        nameInput.value = svc.name || '';
+        document.getElementById('svc-images').value = (svc.images || []).join('\n');
+        document.getElementById('svc-compose-files').value = (svc.compose_files || []).join('\n');
+        document.getElementById('svc-compose-project').value = svc.compose_project || '';
+        document.getElementById('svc-container-name').value = svc.container_name || '';
+        document.getElementById('svc-env-file').value = svc.env_file || '';
+        document.getElementById('svc-auto-update').checked = !!svc.auto_update;
+        document.getElementById('svc-auto-heal').checked = !!svc.auto_heal;
+        document.getElementById('svc-auto-start').checked = !!svc.auto_start;
+        document.getElementById('svc-compose-watch').checked = !!svc.compose_watch;
+        document.getElementById('svc-silent').checked = !!svc.silent;
+        document.getElementById('svc-health-grace').value = svc.health_grace || 60;
+        document.getElementById('svc-heal-cooldown').value = svc.heal_cooldown || 300;
+        document.getElementById('svc-heal-max-restarts').value = svc.heal_max_restarts || 3;
+        document.getElementById('svc-cpu-threshold').value = svc.cpu_threshold || 0;
+        document.getElementById('svc-memory-threshold').value = svc.memory_threshold || 0;
+      }
+    } else {
+      nameInput.value = '';
+    }
+    document.getElementById('svc-modal').classList.remove('hidden');
+  };
+
+  window.closeServiceModal = function() {
+    document.getElementById('svc-modal').classList.add('hidden');
+    editingServiceName = null;
+  };
+
+  window.saveService = function() {
+    var name = editingServiceName || document.getElementById('svc-name').value.trim();
+    if (!name) { showCfgMsg('Service name is required', 'error'); return; }
+    var splitLines = function(v) { return v.split('\n').map(function(s){return s.trim();}).filter(Boolean); };
+    var svc = {
+      name: name,
+      images: splitLines(document.getElementById('svc-images').value),
+      compose_files: splitLines(document.getElementById('svc-compose-files').value),
+      compose_project: document.getElementById('svc-compose-project').value.trim(),
+      container_name: document.getElementById('svc-container-name').value.trim(),
+      env_file: document.getElementById('svc-env-file').value.trim(),
+      auto_update: document.getElementById('svc-auto-update').checked,
+      auto_heal: document.getElementById('svc-auto-heal').checked,
+      auto_start: document.getElementById('svc-auto-start').checked,
+      compose_watch: document.getElementById('svc-compose-watch').checked,
+      silent: document.getElementById('svc-silent').checked,
+      health_grace: parseInt(document.getElementById('svc-health-grace').value) || 60,
+      heal_cooldown: parseInt(document.getElementById('svc-heal-cooldown').value) || 300,
+      heal_max_restarts: parseInt(document.getElementById('svc-heal-max-restarts').value) || 3,
+      cpu_threshold: parseFloat(document.getElementById('svc-cpu-threshold').value) || 0,
+      memory_threshold: parseFloat(document.getElementById('svc-memory-threshold').value) || 0
+    };
+    fetch('/config/services/' + encodeURIComponent(name), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(svc)
+    })
+    .then(function(r) { if (!r.ok) return r.text().then(function(t) { throw new Error(t); }); return r.json(); })
+    .then(function() { closeServiceModal(); loadConfig(); showCfgMsg('Service saved', 'ok'); })
+    .catch(function(e) { showCfgMsg('Error: ' + e.message, 'error'); });
+  };
+
+  window.deleteService = function(name) {
+    if (!confirm('Delete service "' + name + '"?')) return;
+    fetch('/config/services/' + encodeURIComponent(name), {method: 'DELETE'})
+      .then(function(r) { if (!r.ok) return r.text().then(function(t) { throw new Error(t); }); return r.json(); })
+      .then(function() { loadConfig(); showCfgMsg('Service deleted', 'ok'); })
+      .catch(function(e) { showCfgMsg('Error: ' + e.message, 'error'); });
+  };
+
+  window.saveRegistry = function() {
+    var reg = {
+      url: document.getElementById('reg-url').value.trim(),
+      poll_interval: parseInt(document.getElementById('reg-interval').value) || 300,
+      insecure: document.getElementById('reg-insecure').checked
+    };
+    fetch('/config/registry', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(reg)})
+      .then(function(r) { if (!r.ok) return r.text().then(function(t) { throw new Error(t); }); return r.json(); })
+      .then(function() { showCfgMsg('Registry saved', 'ok'); loadConfig(); })
+      .catch(function(e) { showCfgMsg('Error: ' + e.message, 'error'); });
+  };
+
+  window.saveMonitor = function() {
+    var mon = {stats_interval: parseInt(document.getElementById('mon-interval').value) || 0};
+    fetch('/config/monitor', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(mon)})
+      .then(function(r) { if (!r.ok) return r.text().then(function(t) { throw new Error(t); }); return r.json(); })
+      .then(function() { showCfgMsg('Monitor saved', 'ok'); loadConfig(); })
+      .catch(function(e) { showCfgMsg('Error: ' + e.message, 'error'); });
+  };
+
+  window.saveNotifications = function() {
+    var discordURL = document.getElementById('notif-discord-url').value.trim();
+    var notif = {};
+    if (discordURL) notif.discord = {webhook_url: discordURL};
+    if (currentConfig && currentConfig.notifications) {
+      if (currentConfig.notifications.smtp) notif.smtp = currentConfig.notifications.smtp;
+      if (currentConfig.notifications.webhooks) notif.webhooks = currentConfig.notifications.webhooks;
+    }
+    fetch('/config/notifications', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(notif)})
+      .then(function(r) { if (!r.ok) return r.text().then(function(t) { throw new Error(t); }); return r.json(); })
+      .then(function() { showCfgMsg('Notifications saved', 'ok'); loadConfig(); })
+      .catch(function(e) { showCfgMsg('Error: ' + e.message, 'error'); });
+  };
+
+  function showCfgMsg(msg, type) {
+    var el = document.getElementById('cfg-msg');
+    el.textContent = msg;
+    el.className = 'cfg-msg ' + type;
+    setTimeout(function() { el.textContent = ''; el.className = 'cfg-msg'; }, 3000);
+  }
+
+  // close modal on overlay click
+  document.getElementById('svc-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeServiceModal();
+  });
+
   // ---- initial load + connect ----
   fetch('/status')
     .then(function(r) { return r.json(); })
@@ -1409,6 +1793,7 @@ const dataStarHTML = `<!DOCTYPE html>
       setConn('error');
     });
 
+  loadConfig();
   connect();
 })();
 </script>
