@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-14
+
+### Fixed
+- **Local digest resolution:** Prioritize running container's actual image ID as the authoritative local digest source instead of the image tag reference — prevents Dockward from skipping deploys when `docker pull` updates the tag before the container is recreated; falls back to image tag inspect when no container is running
+
 ## [1.1.1] - 2026-03-11
 
 ### Added
@@ -294,7 +299,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd service unit
 - Version flag (`-version`) with build-time injection via ldflags
 
-[Unreleased]: https://github.com/studiowebux/dockward/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/studiowebux/dockward/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/studiowebux/dockward/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/studiowebux/dockward/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.15...v1.1.0
 [1.0.0-alpha.15]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.13...v1.0.0-alpha.15
