@@ -653,13 +653,38 @@ func (u *Updater) checkAndUpdate(ctx context.Context, svc config.Service, manual
 }
 
 // resolveLocalDigestForImage tries two strategies to find the local image digest:
-//  1. Inspect image by constructed reference (registryHost/name:tag).
-//  2. Fallback: find the running container by compose project label, get its
-//     image ID, inspect by ID, and extract digest from RepoDigests.
+//  1. Resolve via running container's actual image ID (what is actually deployed).
+//  2. Fallback: inspect image by constructed reference (registryHost/name:tag)
+//     when no running container exists.
+//
+// Strategy 1 is preferred because the image tag reference can be updated (e.g.
+// by a docker pull) before the container is recreated, which would make the
+// local digest match the remote and skip the deploy even though the container
+// is still running the old image.
 func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Service, registryPrefix, img string) (string, int64) {
 	fullImage := registryPrefix + ":" + imageTag(img)
 
-	// Strategy 1: direct image inspect by reference.
+	// Strategy 1: resolve via running container's image ID (authoritative).
+	container, status := u.findContainerByProject(ctx, svc.ComposeProject)
+	if status == containerRunning {
+		info, err := u.docker.InspectContainer(ctx, container.ID)
+		if err == nil {
+			// ContainerInspect.Image is the image ID (sha256:...).
+			imgByID, err := u.docker.InspectImage(ctx, info.Image)
+			if err == nil {
+				if d := imgByID.LocalDigest(registryPrefix); d != "" {
+					return d, imgByID.Size
+				}
+				logger.Printf("[updater] %s/%s: container image has no matching RepoDigests for %s", svc.Name, img, registryPrefix)
+			} else {
+				logger.Printf("[updater] %s/%s: inspect image by ID %s failed: %v", svc.Name, img, info.Image, err)
+			}
+		} else {
+			logger.Printf("[updater] %s/%s: container inspect failed: %v", svc.Name, img, err)
+		}
+	}
+
+	// Strategy 2: direct image inspect by reference (fallback when no container is running).
 	localImg, err := u.docker.InspectImage(ctx, fullImage)
 	if err == nil {
 		if d := localImg.LocalDigest(registryPrefix); d != "" {
@@ -670,32 +695,7 @@ func (u *Updater) resolveLocalDigestForImage(ctx context.Context, svc config.Ser
 		logger.Printf("[updater] %s/%s: inspect image %s failed: %v", svc.Name, img, fullImage, err)
 	}
 
-	// Strategy 2: resolve via running container's image ID.
-	container, status := u.findContainerByProject(ctx, svc.ComposeProject)
-	if status != containerRunning {
-		logger.Printf("[updater] %s/%s: no running container for fallback digest resolution", svc.Name, img)
-		return "", 0
-	}
-
-	info, err := u.docker.InspectContainer(ctx, container.ID)
-	if err != nil {
-		logger.Printf("[updater] %s/%s: container inspect failed during fallback: %v", svc.Name, img, err)
-		return "", 0
-	}
-
-	// ContainerInspect.Image is the image ID (sha256:...).
-	imgByID, err := u.docker.InspectImage(ctx, info.Image)
-	if err != nil {
-		logger.Printf("[updater] %s/%s: inspect image by ID %s failed: %v", svc.Name, img, info.Image, err)
-		return "", 0
-	}
-
-	if d := imgByID.LocalDigest(registryPrefix); d != "" {
-		logger.Printf("[updater] %s/%s: resolved digest via container fallback", svc.Name, img)
-		return d, imgByID.Size
-	}
-
-	logger.Printf("[updater] %s/%s: fallback image has no matching RepoDigests for %s", svc.Name, img, registryPrefix)
+	logger.Printf("[updater] %s/%s: no local digest resolved", svc.Name, img)
 	return "", 0
 }
 
