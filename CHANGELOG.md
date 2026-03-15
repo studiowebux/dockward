@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-15
+
+### Fixed
+- **No-healthcheck recovery:** Containers without a Docker healthcheck no longer get stuck in degraded state after recovering from a crash — dockward now handles `start` events and clears degraded state when `State.Health` is nil, since there is no `health_status: healthy` event to do so
+
 ## [1.2.0] - 2026-03-14
 
 ### Fixed
@@ -299,7 +304,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd service unit
 - Version flag (`-version`) with build-time injection via ldflags
 
-[Unreleased]: https://github.com/studiowebux/dockward/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/studiowebux/dockward/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/studiowebux/dockward/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/studiowebux/dockward/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/studiowebux/dockward/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/studiowebux/dockward/compare/v1.0.0-alpha.15...v1.1.0
