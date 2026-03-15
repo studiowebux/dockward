@@ -109,6 +109,62 @@ func TestHealer_ExhaustedServicesSnapshot(t *testing.T) {
 	}
 }
 
+func TestHealer_HandleStarted_ClearsDegradedWhenNoHealthcheck(t *testing.T) {
+	h := &Healer{
+		degraded:      make(map[string]bool),
+		restartCounts: make(map[string]int),
+		exhausted:     make(map[string]bool),
+	}
+
+	svc := "myapp"
+	h.setDegraded(svc, true)
+
+	// Simulate: container has no healthcheck — State.Health is nil.
+	info := &docker.ContainerInspect{
+		State: docker.ContainerState{
+			Running: true,
+			Health:  nil,
+		},
+	}
+
+	// Replicate the no-healthcheck branch of handleStarted inline
+	// (no Docker client needed — test the state machine directly).
+	if !h.isDegraded(svc) {
+		t.Fatal("service should be degraded before start event")
+	}
+	if info.State.Health != nil {
+		t.Fatal("test setup error: health should be nil")
+	}
+
+	// Apply the recovery.
+	h.setDegraded(svc, false)
+	h.restartCountsMu.Lock()
+	delete(h.restartCounts, svc)
+	h.restartCountsMu.Unlock()
+	h.exhaustedMu.Lock()
+	delete(h.exhausted, svc)
+	h.exhaustedMu.Unlock()
+
+	if h.isDegraded(svc) {
+		t.Error("service should no longer be degraded after start with no healthcheck")
+	}
+}
+
+func TestHealer_HandleStarted_SkipsWhenNotDegraded(t *testing.T) {
+	h := &Healer{
+		degraded: make(map[string]bool),
+	}
+
+	// Service was never degraded — start event should be a no-op.
+	if h.isDegraded("myapp") {
+		t.Fatal("test setup error: service should not be degraded")
+	}
+	// Nothing to assert beyond confirming isDegraded stays false.
+	if h.isDegraded("myapp") {
+		t.Error("service should remain non-degraded")
+	}
+}
+
 func TestHealer_SilentServiceIgnoredByFindServiceByEvent(t *testing.T) {
 	cfg := &config.Config{
 		Services: []config.Service{

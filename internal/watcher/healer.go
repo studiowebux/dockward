@@ -131,6 +131,9 @@ func (h *Healer) handleEvent(ctx context.Context, event docker.Event) {
 
 	case event.Action == "die":
 		h.handleDied(ctx, svc, containerName)
+
+	case event.Action == "start":
+		h.handleStarted(ctx, svc, containerName, containerID)
 	}
 }
 
@@ -429,6 +432,50 @@ func (h *Healer) handleDied(ctx context.Context, svc *config.Service, containerN
 		Event:     "died",
 		Message:   "Container exited unexpectedly.",
 		Level:     "critical",
+		Container: containerName,
+	}); err != nil {
+		logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
+	}
+}
+
+func (h *Healer) handleStarted(ctx context.Context, svc *config.Service, containerName, containerID string) {
+	// Only relevant if we were tracking a degraded state from a prior die event.
+	if !h.isDegraded(svc.Name) {
+		return
+	}
+
+	// If the container has a healthcheck, a health_status: healthy event will clear degraded.
+	info, err := h.docker.InspectContainer(ctx, containerID)
+	if err != nil {
+		logger.Printf("[healer] %s: start inspect error: %v", svc.Name, err)
+		return
+	}
+	if info.State.Health != nil {
+		return
+	}
+
+	// No healthcheck: container is running — treat as recovered.
+	logger.Printf("[healer] %s: restarted (no healthcheck), clearing degraded state", svc.Name)
+	h.metrics.SetHealthy(svc.Name, true)
+	h.setDegraded(svc.Name, false)
+	h.restartCountsMu.Lock()
+	delete(h.restartCounts, svc.Name)
+	h.restartCountsMu.Unlock()
+	h.exhaustedMu.Lock()
+	delete(h.exhausted, svc.Name)
+	h.exhaustedMu.Unlock()
+	h.dispatcher.Send(ctx, notify.Alert{
+		Service:   svc.Name,
+		Event:     "recovered",
+		Message:   "Container restarted (no healthcheck configured).",
+		Container: containerName,
+		Level:     notify.LevelInfo,
+	})
+	if err := h.audit.Write(audit.Entry{
+		Service:   svc.Name,
+		Event:     "recovered",
+		Message:   "Container restarted (no healthcheck configured).",
+		Level:     "info",
 		Container: containerName,
 	}); err != nil {
 		logger.Printf("[healer] %s: audit write error: %v", svc.Name, err)
