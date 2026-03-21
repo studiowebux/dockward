@@ -167,7 +167,7 @@ func (u *Updater) Run(ctx context.Context) {
 func (u *Updater) cleanupOldEntries() {
 	// Build set of current service names
 	currentServices := make(map[string]bool)
-	for _, svc := range u.cfg.Services {
+	for _, svc := range u.cfg.SnapshotServices() {
 		currentServices[svc.Name] = true
 		for _, img := range svc.Images {
 			currentServices[svc.Name+"/"+img] = true
@@ -241,7 +241,7 @@ func (u *Updater) cleanupOldEntries() {
 
 func (u *Updater) pollAll(ctx context.Context) {
 	u.metrics.RecordPoll()
-	for _, svc := range u.cfg.Services {
+	for _, svc := range u.cfg.SnapshotServices() {
 		if ctx.Err() != nil {
 			return
 		}

@@ -91,7 +91,7 @@ func (h *Healer) Run(ctx context.Context) {
 // seedHealthFromInspect inspects all configured service containers at startup
 // to pre-populate health gauges before the first Docker event fires.
 func (h *Healer) seedHealthFromInspect(ctx context.Context) {
-	for _, svc := range h.cfg.Services {
+	for _, svc := range h.cfg.SnapshotServices() {
 		if svc.Silent {
 			continue
 		}
@@ -117,23 +117,23 @@ func (h *Healer) handleEvent(ctx context.Context, event docker.Event) {
 	containerName := event.ContainerName()
 	containerID := event.Actor.ID
 
-	svc := h.findServiceByEvent(event)
-	if svc == nil {
+	svc, ok := h.findServiceByEvent(event)
+	if !ok {
 		return
 	}
 
 	switch {
 	case strings.HasPrefix(event.Action, "health_status: unhealthy"):
-		h.handleUnhealthy(ctx, svc, containerName, containerID)
+		h.handleUnhealthy(ctx, &svc, containerName, containerID)
 
 	case strings.HasPrefix(event.Action, "health_status: healthy"):
-		h.handleHealthy(ctx, svc, containerName)
+		h.handleHealthy(ctx, &svc, containerName)
 
 	case event.Action == "die":
-		h.handleDied(ctx, svc, containerName)
+		h.handleDied(ctx, &svc, containerName)
 
 	case event.Action == "start":
-		h.handleStarted(ctx, svc, containerName, containerID)
+		h.handleStarted(ctx, &svc, containerName, containerID)
 	}
 }
 
@@ -484,22 +484,22 @@ func (h *Healer) handleStarted(ctx context.Context, svc *config.Service, contain
 
 // findServiceByEvent matches a Docker event to a configured service
 // using the com.docker.compose.project label or container name from event attributes.
-func (h *Healer) findServiceByEvent(event docker.Event) *config.Service {
+// Returns a value copy to avoid data races with concurrent config mutations.
+func (h *Healer) findServiceByEvent(event docker.Event) (config.Service, bool) {
 	project := event.Actor.Attributes["com.docker.compose.project"]
 	name := event.Actor.Attributes["name"]
-	for i := range h.cfg.Services {
-		svc := &h.cfg.Services[i]
+	for _, svc := range h.cfg.SnapshotServices() {
 		if svc.Silent {
 			continue
 		}
 		if project != "" && svc.ComposeProject == project {
-			return svc
+			return svc, true
 		}
 		if name != "" && svc.ContainerName == name {
-			return svc
+			return svc, true
 		}
 	}
-	return nil
+	return config.Service{}, false
 }
 
 func (h *Healer) inCooldown(containerName string) bool {

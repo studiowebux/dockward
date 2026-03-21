@@ -33,11 +33,6 @@ type API struct {
 	configPath     string   // Path to config file for write-back on mutations
 	servers        []*http.Server // one per listen address, all share the same mux
 
-	// cfgMu guards config mutations made via the config API endpoints.
-	// Running goroutines (updater, healer, monitor) share the same *config.Config
-	// pointer — mutations under this lock are visible to all components.
-	cfgMu sync.RWMutex
-
 	// statusMu guards statusSubs — the set of channels notified when service
 	// state changes (audit entry written → status should be re-pushed to SSE).
 	statusMu   sync.Mutex
@@ -258,7 +253,7 @@ func (a *API) handleTriggerAll(w http.ResponseWriter, r *http.Request) {
 
 	// Basic rate limiting check - only one trigger per service at a time
 	deployCount := 0
-	for _, svc := range a.updater.cfg.Services {
+	for _, svc := range a.updater.cfg.SnapshotServices() {
 		if a.updater.IsDeploying(svc.Name) {
 			deployCount++
 		}
@@ -304,7 +299,7 @@ func (a *API) handleTriggerService(w http.ResponseWriter, r *http.Request) {
 	redirectUI := r.URL.Query().Get("redirect") == "ui"
 
 	found := false
-	for _, svc := range a.updater.cfg.Services {
+	for _, svc := range a.updater.cfg.SnapshotServices() {
 		if svc.Name == serviceName {
 			if !svc.AutoUpdate {
 				if redirectUI {
@@ -469,8 +464,9 @@ func (a *API) handleStatusAll(w http.ResponseWriter, r *http.Request) {
 	snap := a.stateSnapshot(r.Context())
 	meta := a.metrics.Meta()
 
-	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
-	for _, svc := range a.updater.cfg.Services {
+	cfgServices := a.updater.cfg.SnapshotServices()
+	services := make([]serviceStatus, 0, len(cfgServices))
+	for _, svc := range cfgServices {
 		services = append(services, a.buildServiceStatus(svc, snap))
 	}
 
@@ -502,7 +498,7 @@ func (a *API) handleStatusService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snap := a.stateSnapshot(r.Context())
-	for _, svc := range a.updater.cfg.Services {
+	for _, svc := range a.updater.cfg.SnapshotServices() {
 		if svc.Name == serviceName {
 			writeJSON(w, a.buildServiceStatus(svc, snap))
 			return
@@ -546,7 +542,7 @@ func (a *API) stateSnapshot(ctx context.Context) stateSnap {
 	snap.deployed = a.updater.DeployedInfos()
 
 	containers := make(map[string][]ContainerInfo)
-	for _, svc := range a.updater.cfg.Services {
+	for _, svc := range a.updater.cfg.SnapshotServices() {
 		if svc.Silent || svc.ComposeProject == "" {
 			continue
 		}
@@ -1816,27 +1812,29 @@ func (a *API) handleForceRedeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var svc *config.Service
-	for i := range a.updater.cfg.Services {
-		if a.updater.cfg.Services[i].Name == serviceName {
-			svc = &a.updater.cfg.Services[i]
+	var found config.Service
+	var ok bool
+	for _, s := range a.updater.cfg.SnapshotServices() {
+		if s.Name == serviceName {
+			found = s
+			ok = true
 			break
 		}
 	}
 
-	if svc == nil {
+	if !ok {
 		http.Error(w, "service not found", http.StatusNotFound)
 		return
 	}
 
-	if len(svc.ComposeFiles) == 0 {
+	if len(found.ComposeFiles) == 0 {
 		writeJSON(w, map[string]string{"status": "error", "message": "no compose files configured"})
 		return
 	}
 
-	logger.Printf("[api] force redeploy: %s", svc.Name)
-	svcCopy := *svc // copy for goroutine safety
-	saferun.Go("force-redeploy-"+svc.Name, func() {
+	logger.Printf("[api] force redeploy: %s", found.Name)
+	svcCopy := found // already a value copy
+	saferun.Go("force-redeploy-"+found.Name, func() {
 		ctx := context.Background()
 		a.updater.tryStartDeploy(svcCopy.Name)
 		composeOut, err := compose.Up(ctx, a.updater.cfg.Runtime, svcCopy.ComposeFiles, svcCopy.ComposeProject, svcCopy.EnvFile)
@@ -1885,21 +1883,25 @@ func (a *API) handleCommandPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var svc *config.Service
-	for i := range a.updater.cfg.Services {
-		if a.updater.cfg.Services[i].Name == serviceName {
-			svc = &a.updater.cfg.Services[i]
+	var svc config.Service
+	var svcFound bool
+	for _, s := range a.updater.cfg.SnapshotServices() {
+		if s.Name == serviceName {
+			svc = s
+			svcFound = true
 			break
 		}
 	}
 
-	if svc == nil {
+	if !svcFound {
 		http.Error(w, "service not found", http.StatusNotFound)
 		return
 	}
 
 	// Build the compose command using configured runtime
+	a.updater.cfg.RLock()
 	runtime := a.updater.cfg.Runtime
+	a.updater.cfg.RUnlock()
 	if runtime == "" {
 		runtime = "docker" // fallback for safety
 	}

@@ -185,7 +185,7 @@ func TestHealer_SilentServiceIgnoredByFindServiceByEvent(t *testing.T) {
 		},
 	}
 
-	if svc := h.findServiceByEvent(event); svc != nil {
+	if svc, ok := h.findServiceByEvent(event); ok {
 		t.Errorf("silent service should be ignored by findServiceByEvent, got %q", svc.Name)
 	}
 }

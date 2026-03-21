@@ -14,8 +14,9 @@ import (
 // sendStatus marshals and writes a status SSE event to the client.
 func (a *API) sendStatus(w http.ResponseWriter, flusher http.Flusher) {
 	snap := a.stateSnapshot(context.Background())
-	services := make([]serviceStatus, 0, len(a.updater.cfg.Services))
-	for _, svc := range a.updater.cfg.Services {
+	cfgServices := a.updater.cfg.SnapshotServices()
+	services := make([]serviceStatus, 0, len(cfgServices))
+	for _, svc := range cfgServices {
 		services = append(services, a.buildServiceStatus(svc, snap))
 	}
 

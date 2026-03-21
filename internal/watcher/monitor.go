@@ -112,18 +112,34 @@ func (m *Monitor) ContainerStatsSnapshot() map[string]ContainerStats {
 }
 
 func (m *Monitor) pollAll(ctx context.Context) {
-	for _, svc := range m.cfg.Services {
+	services := m.cfg.SnapshotServices()
+	// Track container IDs seen this cycle to evict stale entries.
+	currentIDs := make(map[string]struct{})
+
+	for _, svc := range services {
 		if ctx.Err() != nil {
 			return
 		}
-		m.checkService(ctx, svc)
+		ids := m.checkService(ctx, svc)
+		for _, id := range ids {
+			currentIDs[id] = struct{}{}
+		}
 	}
+
+	// Evict stale container stats from previous cycles.
+	m.containerStatsMu.Lock()
+	for id := range m.containerStats {
+		if _, ok := currentIDs[id]; !ok {
+			delete(m.containerStats, id)
+		}
+	}
+	m.containerStatsMu.Unlock()
 }
 
-func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
+func (m *Monitor) checkService(ctx context.Context, svc config.Service) []string {
 	containerIDs := findRunningContainerIDs(ctx, m.docker, svc)
 	if len(containerIDs) == 0 {
-		return
+		return nil
 	}
 
 	cooldown := time.Duration(svc.HealCooldown) * time.Second
@@ -195,6 +211,8 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) {
 		MemoryLimitMB: float64(totalMemLimit) / 1024 / 1024,
 	}
 	m.latestMu.Unlock()
+
+	return containerIDs
 }
 
 func (m *Monitor) maybeAlert(ctx context.Context, svc config.Service, metric string, cooldown time.Duration, message string) bool {
