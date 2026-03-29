@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-03-29
+
+### Fixed
+- **Config data race:** `RWMutex` added to `Config`; background goroutines (updater, healer, monitor) now read via `SnapshotServices()` instead of accessing the slice directly — eliminates race between `PUT /config/*` handlers and concurrent readers
+- **Audit log rotation race:** `Recent()` opens the log file under lock before rotation can rename it, preventing a TOCTOU window
+- **Warden state file permissions:** `0644` → `0600` — state file is no longer world-readable
+- **Warden dashboard XSS:** Token is now embedded via `template.JS` + `json.Marshal` instead of raw string interpolation into the `<script>` tag
+- **Stale container stats:** Monitor now evicts container IDs from `containerStats` each cycle so removed containers no longer accumulate memory
+- **Non-deterministic Prometheus output:** Metrics are now sorted by service name for stable ordering
+- **Webhook env expansion:** URL env var expansion moved to config load time, consistent with header expansion (was previously deferred to send time)
+- **Double shutdown timeout:** `main.go` now passes `context.Background()` to the coordinator; the coordinator applies its own 30 s timeout — previously two independent 30 s timeouts stacked
+
+### Changed
+- **`saferun.RunWithRecover` renamed to `RunInline`** to distinguish it from `RunWithRecovery` (goroutine wrapper)
+- **Config validation warnings** now go through the logger instead of `os.Stderr`
+- **`projectNameRegex`** promoted to package-level `var` — was recompiled on every `validate()` call
+
+### Removed
+- **`manager.DeploymentTracker`** and `StartDeploymentWithContext` — dead code, functionality fully covered by `Updater`'s deploying map
+- **`cfgMu` field on API struct** — replaced by `Config.mu` accessed via `cfg.Lock/Unlock/RLock/RUnlock`
+
 ## [1.3.0] - 2026-03-15
 
 ### Fixed
