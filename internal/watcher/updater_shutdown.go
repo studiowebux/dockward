@@ -5,20 +5,7 @@ import (
 	"time"
 
 	"github.com/studiowebux/dockward/internal/logger"
-	"github.com/studiowebux/dockward/internal/manager"
 )
-
-// DeploymentManager handles deployment tracking for graceful shutdown.
-type DeploymentManager struct {
-	tracker *manager.DeploymentTracker
-}
-
-// NewDeploymentManager creates a new deployment manager.
-func NewDeploymentManager() *DeploymentManager {
-	return &DeploymentManager{
-		tracker: manager.NewDeploymentTracker(),
-	}
-}
 
 // Shutdown implements the GracefulManager interface for Updater.
 func (u *Updater) Shutdown(ctx context.Context) error {
@@ -86,24 +73,3 @@ func (u *Updater) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// StartDeploymentWithContext starts a deployment with proper context tracking.
-// Returns a context that should be used for the deployment operations.
-// NOTE: This function is currently unused but kept for future enhancement.
-// The existing deploy() function already handles context correctly via tryStartDeploy/clearDeploying.
-func (u *Updater) StartDeploymentWithContext(ctx context.Context, service string) (context.Context, bool) {
-	// Check if we're shutting down
-	select {
-	case <-ctx.Done():
-		return nil, false
-	default:
-	}
-
-	// Use existing tryStartDeploy for atomic check
-	if !u.tryStartDeploy(service) {
-		return nil, false
-	}
-
-	// Return the parent context directly since deployment tracking is already
-	// handled via the deploying map in tryStartDeploy/clearDeploying
-	return ctx, true
-}

@@ -130,7 +130,7 @@ func (s *Store) SaveState(path string) {
 		logger.Printf("warden: marshal state: %v", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil { // #nosec G306
+	if err := os.WriteFile(path, data, 0600); err != nil { // #nosec G306
 		logger.Printf("warden: save state %s: %v", path, err)
 		return
 	}

@@ -32,8 +32,9 @@ func GoContext(name string, ctx context.Context, fn func(context.Context)) {
 	}()
 }
 
-// RunWithRecover wraps a function with panic recovery for inline use.
-func RunWithRecover(name string, fn func()) {
+// RunInline wraps a function with panic recovery for synchronous (inline) use.
+// Unlike RunWithRecovery, this does NOT launch a goroutine.
+func RunInline(name string, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Critical("[%s] panic recovered: %v\n%s", name, r, debug.Stack())

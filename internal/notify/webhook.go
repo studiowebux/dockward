@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"text/template"
 	"time"
@@ -78,10 +77,7 @@ func (w *WebhookNotifier) Send(ctx context.Context, alert Alert) error {
 		return fmt.Errorf("render webhook body %q: %w", w.name, err)
 	}
 
-	// Expand env vars in URL
-	url := os.ExpandEnv(w.url)
-
-	req, err := http.NewRequestWithContext(ctx, w.method, url, &body)
+	req, err := http.NewRequestWithContext(ctx, w.method, w.url, &body)
 	if err != nil {
 		return fmt.Errorf("create webhook request %q: %w", w.name, err)
 	}

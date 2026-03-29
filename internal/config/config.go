@@ -11,7 +11,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/studiowebux/dockward/internal/logger"
 )
+
+// projectNameRegex enforces strict project name validation: alphanumeric + dash + underscore only, 1-64 chars.
+var projectNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // Push defines optional warden push settings for agent mode.
 type Push struct {
@@ -22,6 +28,8 @@ type Push struct {
 
 // Config is the top-level configuration.
 type Config struct {
+	mu              sync.RWMutex  `json:"-"` // guards Services during live config mutations via the API
+
 	Runtime         string        `json:"runtime"`        // Container runtime: "docker" or "podman", default: "docker"
 	Registry        Registry      `json:"registry"`
 	API             API           `json:"api"`
@@ -121,6 +129,29 @@ type Service struct {
 	HealMaxRestarts int      `json:"heal_max_restarts"` // max consecutive failed restarts before giving up, default 3
 }
 
+// SnapshotServices returns a copy of the services slice under a read lock.
+// Background goroutines must use this instead of accessing cfg.Services directly
+// to avoid data races with config API mutations.
+func (c *Config) SnapshotServices() []Service {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]Service, len(c.Services))
+	copy(out, c.Services)
+	return out
+}
+
+// Lock acquires the write lock for config mutation. Callers must call Unlock.
+func (c *Config) Lock() { c.mu.Lock() }
+
+// Unlock releases the write lock.
+func (c *Config) Unlock() { c.mu.Unlock() }
+
+// RLock acquires the read lock for safe concurrent config reads.
+func (c *Config) RLock() { c.mu.RLock() }
+
+// RUnlock releases the read lock.
+func (c *Config) RUnlock() { c.mu.RUnlock() }
+
 // Load reads and parses a JSON config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path from CLI flag, not network input
@@ -141,14 +172,15 @@ func Load(path string) (*Config, error) {
 
 	// Log warnings for invalid services (non-fatal)
 	if len(cfg.InvalidServices) > 0 {
-		fmt.Fprintf(os.Stderr, "[config] WARNING: %d service(s) failed validation and will be skipped:\n", len(cfg.InvalidServices))
+		logger.Printf("[config] WARNING: %d service(s) failed validation and will be skipped:", len(cfg.InvalidServices))
 		for _, inv := range cfg.InvalidServices {
-			fmt.Fprintf(os.Stderr, "  - service[%d] %q: %s\n", inv.Index, inv.Name, inv.Reason)
+			logger.Printf("[config]   - service[%d] %q: %s", inv.Index, inv.Name, inv.Reason)
 		}
 	}
 
-	// Expand environment variables in webhook headers
+	// Expand environment variables in webhook headers and URLs
 	for i := range cfg.Notifications.Webhooks {
+		cfg.Notifications.Webhooks[i].URL = os.ExpandEnv(cfg.Notifications.Webhooks[i].URL)
 		for k, v := range cfg.Notifications.Webhooks[i].Headers {
 			cfg.Notifications.Webhooks[i].Headers[k] = os.ExpandEnv(v)
 		}
@@ -201,9 +233,6 @@ func (c *Config) validate() error {
 	if c.Runtime != "docker" && c.Runtime != "podman" {
 		return fmt.Errorf("runtime must be 'docker' or 'podman', got %q", c.Runtime)
 	}
-
-	// Compile regex for project name validation once
-	projectNameRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 	// Collect valid services and track invalid ones (non-fatal)
 	validServices := make([]Service, 0, len(c.Services))

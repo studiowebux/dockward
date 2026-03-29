@@ -252,11 +252,11 @@ func (l *Logger) Recent(n int) ([]Entry, error) {
 		return nil, nil
 	}
 
+	// Open the file under lock to prevent a race with rotate() which renames it.
+	// Once the fd is open, the file remains readable even after rename (Unix semantics).
 	l.mu.Lock()
-	name := l.file.Name()
+	f, err := os.Open(l.file.Name()) // #nosec G304,G703 -- opening our own log file, path from config
 	l.mu.Unlock()
-
-	f, err := os.Open(name) // #nosec G304,G703 -- opening our own log file, path from config
 	if err != nil {
 		return nil, fmt.Errorf("read audit log: %w", err)
 	}

@@ -15,8 +15,8 @@ func (a *API) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	a.cfgMu.RLock()
-	defer a.cfgMu.RUnlock()
+	a.updater.cfg.RLock()
+	defer a.updater.cfg.RUnlock()
 	writeJSON(w, a.updater.cfg)
 }
 
@@ -26,8 +26,8 @@ func (a *API) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	a.cfgMu.RLock()
-	defer a.cfgMu.RUnlock()
+	a.updater.cfg.RLock()
+	defer a.updater.cfg.RUnlock()
 
 	data, err := json.MarshalIndent(a.updater.cfg, "", "  ")
 	if err != nil {
@@ -55,8 +55,8 @@ func (a *API) handlePutRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.cfgMu.Lock()
-	defer a.cfgMu.Unlock()
+	a.updater.cfg.Lock()
+	defer a.updater.cfg.Unlock()
 
 	a.updater.cfg.Registry = reg
 	a.updater.cfg.ApplyDefaults()
@@ -80,8 +80,8 @@ func (a *API) handlePutMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.cfgMu.Lock()
-	defer a.cfgMu.Unlock()
+	a.updater.cfg.Lock()
+	defer a.updater.cfg.Unlock()
 
 	a.updater.cfg.Monitor = mon
 	a.updater.cfg.ApplyDefaults()
@@ -105,8 +105,8 @@ func (a *API) handlePutNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.cfgMu.Lock()
-	defer a.cfgMu.Unlock()
+	a.updater.cfg.Lock()
+	defer a.updater.cfg.Unlock()
 
 	a.updater.cfg.Notifications = notif
 	if err := a.updater.cfg.Save(a.configPath); err != nil {
@@ -146,8 +146,8 @@ func (a *API) handleUpsertService(w http.ResponseWriter, r *http.Request) {
 	}
 	svc.Name = name // URL name is authoritative
 
-	a.cfgMu.Lock()
-	defer a.cfgMu.Unlock()
+	a.updater.cfg.Lock()
+	defer a.updater.cfg.Unlock()
 
 	found := false
 	for i, s := range a.updater.cfg.Services {
@@ -184,8 +184,8 @@ func (a *API) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.cfgMu.Lock()
-	defer a.cfgMu.Unlock()
+	a.updater.cfg.Lock()
+	defer a.updater.cfg.Unlock()
 
 	svcs := a.updater.cfg.Services
 	newSvcs := make([]config.Service, 0, len(svcs))

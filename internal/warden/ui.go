@@ -2,6 +2,7 @@ package warden
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"github.com/studiowebux/dockward/internal/logger"
@@ -161,7 +162,7 @@ es.onmessage = e  => { try { addRow(JSON.parse(e.data)); } catch(_) {} };
 type dashboardData struct {
 	Hostname string
 	Uptime   string
-	Token    string
+	Token    template.JS // JS-safe encoded token string (JSON-quoted)
 	Agents   []AgentState
 	Recent   interface{}
 }
@@ -193,10 +194,11 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	agents := s.store.AgentStates()
 	sort.Slice(agents, func(i, j int) bool { return agents[i].ID < agents[j].ID })
 
+	tokenJSON, _ := json.Marshal(s.cfg.API.Token)
 	data := dashboardData{
 		Hostname: hostname,
 		Uptime:   formatUptime(time.Since(startTime)),
-		Token:    s.cfg.API.Token,
+		Token:    template.JS(tokenJSON), // #nosec -- JSON-encoded string is safe for JS context
 		Agents:   agents,
 		Recent:   s.store.Recent(200),
 	}

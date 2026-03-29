@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -219,6 +220,26 @@ func (m *Metrics) Meta() Meta {
 	}
 }
 
+// sortedKeysInt64 returns sorted keys from a map[string]int64.
+func sortedKeysInt64(m map[string]int64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// sortedKeysBool returns sorted keys from a map[string]bool.
+func sortedKeysBool(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // Prometheus returns metrics in Prometheus text exposition format.
 func (m *Metrics) Prometheus() string {
 	m.mu.RLock()
@@ -228,33 +249,33 @@ func (m *Metrics) Prometheus() string {
 
 	b.WriteString("# HELP watcher_updates_total Total successful image updates\n")
 	b.WriteString("# TYPE watcher_updates_total counter\n")
-	for svc, count := range m.updates {
-		fmt.Fprintf(&b, "watcher_updates_total{service=%q} %d\n", svc, count)
+	for _, svc := range sortedKeysInt64(m.updates) {
+		fmt.Fprintf(&b, "watcher_updates_total{service=%q} %d\n", svc, m.updates[svc])
 	}
 
 	b.WriteString("# HELP watcher_rollbacks_total Total rollbacks after failed updates\n")
 	b.WriteString("# TYPE watcher_rollbacks_total counter\n")
-	for svc, count := range m.rollbacks {
-		fmt.Fprintf(&b, "watcher_rollbacks_total{service=%q} %d\n", svc, count)
+	for _, svc := range sortedKeysInt64(m.rollbacks) {
+		fmt.Fprintf(&b, "watcher_rollbacks_total{service=%q} %d\n", svc, m.rollbacks[svc])
 	}
 
 	b.WriteString("# HELP watcher_restarts_total Total auto-heal restarts\n")
 	b.WriteString("# TYPE watcher_restarts_total counter\n")
-	for svc, count := range m.restarts {
-		fmt.Fprintf(&b, "watcher_restarts_total{service=%q} %d\n", svc, count)
+	for _, svc := range sortedKeysInt64(m.restarts) {
+		fmt.Fprintf(&b, "watcher_restarts_total{service=%q} %d\n", svc, m.restarts[svc])
 	}
 
 	b.WriteString("# HELP watcher_failures_total Total failures (critical events)\n")
 	b.WriteString("# TYPE watcher_failures_total counter\n")
-	for svc, count := range m.failures {
-		fmt.Fprintf(&b, "watcher_failures_total{service=%q} %d\n", svc, count)
+	for _, svc := range sortedKeysInt64(m.failures) {
+		fmt.Fprintf(&b, "watcher_failures_total{service=%q} %d\n", svc, m.failures[svc])
 	}
 
 	b.WriteString("# HELP watcher_service_healthy Whether each service is healthy (1) or not (0)\n")
 	b.WriteString("# TYPE watcher_service_healthy gauge\n")
-	for svc, healthy := range m.serviceHealthy {
+	for _, svc := range sortedKeysBool(m.serviceHealthy) {
 		v := 0
-		if healthy {
+		if m.serviceHealthy[svc] {
 			v = 1
 		}
 		fmt.Fprintf(&b, "watcher_service_healthy{service=%q} %d\n", svc, v)
@@ -262,9 +283,9 @@ func (m *Metrics) Prometheus() string {
 
 	b.WriteString("# HELP watcher_service_blocked Whether a service has a blocked digest (1) or not (0)\n")
 	b.WriteString("# TYPE watcher_service_blocked gauge\n")
-	for svc, blocked := range m.serviceBlocked {
+	for _, svc := range sortedKeysBool(m.serviceBlocked) {
 		v := 0
-		if blocked {
+		if m.serviceBlocked[svc] {
 			v = 1
 		}
 		fmt.Fprintf(&b, "watcher_service_blocked{service=%q} %d\n", svc, v)
@@ -286,14 +307,14 @@ func (m *Metrics) Prometheus() string {
 
 	b.WriteString("# HELP watcher_cpu_alerts_total Total CPU threshold alerts\n")
 	b.WriteString("# TYPE watcher_cpu_alerts_total counter\n")
-	for svc, count := range m.cpuAlerts {
-		fmt.Fprintf(&b, "watcher_cpu_alerts_total{service=%q} %d\n", svc, count)
+	for _, svc := range sortedKeysInt64(m.cpuAlerts) {
+		fmt.Fprintf(&b, "watcher_cpu_alerts_total{service=%q} %d\n", svc, m.cpuAlerts[svc])
 	}
 
 	b.WriteString("# HELP watcher_memory_alerts_total Total memory threshold alerts\n")
 	b.WriteString("# TYPE watcher_memory_alerts_total counter\n")
-	for svc, count := range m.memoryAlerts {
-		fmt.Fprintf(&b, "watcher_memory_alerts_total{service=%q} %d\n", svc, count)
+	for _, svc := range sortedKeysInt64(m.memoryAlerts) {
+		fmt.Fprintf(&b, "watcher_memory_alerts_total{service=%q} %d\n", svc, m.memoryAlerts[svc])
 	}
 
 	// Docker daemon health metrics

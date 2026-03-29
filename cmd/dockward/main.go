@@ -169,12 +169,8 @@ func main() {
 			logger.Printf("audit write error: %v", werr)
 		}
 
-		// Create a context for shutdown with timeout
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer shutdownCancel()
-
-		// Perform graceful shutdown
-		if err := coordinator.Shutdown(shutdownCtx); err != nil {
+		// Perform graceful shutdown — the coordinator applies its own timeout.
+		if err := coordinator.Shutdown(context.Background()); err != nil {
 			logger.Printf("graceful shutdown failed: %v", err)
 		}
 
