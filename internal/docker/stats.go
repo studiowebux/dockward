@@ -12,6 +12,11 @@ type ContainerStats struct {
 	MemoryPercent float64
 	MemoryUsage   uint64 // bytes
 	MemoryLimit   uint64 // bytes
+
+	// Raw CPU counters — used by callers that track their own deltas.
+	CPUTotalUsage  uint64
+	CPUSystemUsage uint64
+	NumCPUs        int
 }
 
 // rawStats is the relevant subset of the Docker stats JSON response.
@@ -77,9 +82,12 @@ func (c *Client) ContainerStats(ctx context.Context, containerID string) (*Conta
 	}
 
 	return &ContainerStats{
-		CPUPercent:    cpuPercent,
-		MemoryPercent: memPercent,
-		MemoryUsage:   usage,
-		MemoryLimit:   limit,
+		CPUPercent:     cpuPercent,
+		MemoryPercent:  memPercent,
+		MemoryUsage:    usage,
+		MemoryLimit:    limit,
+		CPUTotalUsage:  raw.CPUStats.CPUUsage.TotalUsage,
+		CPUSystemUsage: raw.CPUStats.SystemCPUUsage,
+		NumCPUs:        numCPUs,
 	}, nil
 }
