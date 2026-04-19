@@ -30,6 +30,12 @@ type ContainerStats struct {
 	MemoryLimitMB float64
 }
 
+// cpuSample holds raw CPU counters from one poll cycle for delta calculation.
+type cpuSample struct {
+	totalUsage  uint64
+	systemUsage uint64
+}
+
 // Monitor polls container resource usage and fires alerts when thresholds are exceeded.
 // Pattern: background goroutine, interval = poll_interval, cooldown = heal_cooldown.
 type Monitor struct {
@@ -47,6 +53,12 @@ type Monitor struct {
 	containerStats   map[string]ContainerStats
 	containerStatsMu sync.RWMutex
 
+	// prevCPU holds the previous poll's raw CPU counters per containerID.
+	// Used to compute accurate deltas instead of relying on Docker's precpu_stats,
+	// which returns zeros on one-shot calls and produces wildly inflated percentages.
+	prevCPU   map[string]cpuSample
+	prevCPUMu sync.Mutex
+
 	// alertedAt tracks the last alert time per "service:metric" key to prevent spam.
 	alertedAt   map[string]time.Time
 	alertedAtMu sync.Mutex
@@ -62,6 +74,7 @@ func NewMonitor(cfg *config.Config, dc *docker.Client, dispatcher *notify.Dispat
 		metrics:        metrics,
 		latest:         make(map[string]ServiceStats),
 		containerStats: make(map[string]ContainerStats),
+		prevCPU:        make(map[string]cpuSample),
 		alertedAt:      make(map[string]time.Time),
 	}
 }
@@ -126,7 +139,7 @@ func (m *Monitor) pollAll(ctx context.Context) {
 		}
 	}
 
-	// Evict stale container stats from previous cycles.
+	// Evict stale entries from previous cycles.
 	m.containerStatsMu.Lock()
 	for id := range m.containerStats {
 		if _, ok := currentIDs[id]; !ok {
@@ -134,6 +147,14 @@ func (m *Monitor) pollAll(ctx context.Context) {
 		}
 	}
 	m.containerStatsMu.Unlock()
+
+	m.prevCPUMu.Lock()
+	for id := range m.prevCPU {
+		if _, ok := currentIDs[id]; !ok {
+			delete(m.prevCPU, id)
+		}
+	}
+	m.prevCPUMu.Unlock()
 }
 
 func (m *Monitor) checkService(ctx context.Context, svc config.Service) []string {
@@ -158,7 +179,23 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) []string
 			continue
 		}
 
-		totalCPU += raw.CPUPercent
+		// Compute CPU% from our own tracked delta to avoid Docker's precpu_stats
+		// returning zeros on one-shot calls, which inflates values into the thousands.
+		m.prevCPUMu.Lock()
+		prev, hasPrev := m.prevCPU[id]
+		m.prevCPU[id] = cpuSample{totalUsage: raw.CPUTotalUsage, systemUsage: raw.CPUSystemUsage}
+		m.prevCPUMu.Unlock()
+
+		var cpuPct float64
+		if hasPrev && raw.NumCPUs > 0 {
+			cpuDelta := float64(raw.CPUTotalUsage) - float64(prev.totalUsage)
+			sysDelta := float64(raw.CPUSystemUsage) - float64(prev.systemUsage)
+			if sysDelta > 0 && cpuDelta >= 0 {
+				cpuPct = (cpuDelta / sysDelta) * float64(raw.NumCPUs) * 100.0
+			}
+		}
+
+		totalCPU += cpuPct
 		totalMemUsage += raw.MemoryUsage
 		totalMemLimit += raw.MemoryLimit
 
@@ -169,7 +206,7 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) []string
 		}
 		m.containerStatsMu.Lock()
 		m.containerStats[id] = ContainerStats{
-			CPUPercent:    raw.CPUPercent,
+			CPUPercent:    cpuPct,
 			MemoryPercent: containerMemPct,
 			MemoryUsageMB: float64(raw.MemoryUsage) / 1024 / 1024,
 			MemoryLimitMB: float64(raw.MemoryLimit) / 1024 / 1024,
@@ -177,9 +214,9 @@ func (m *Monitor) checkService(ctx context.Context, svc config.Service) []string
 		m.containerStatsMu.Unlock()
 
 		// Per-container threshold alerts use container-scoped cooldown keys.
-		if svc.CPUThreshold > 0 && raw.CPUPercent > svc.CPUThreshold {
+		if svc.CPUThreshold > 0 && cpuPct > svc.CPUThreshold {
 			if m.maybeAlert(ctx, svc, "cpu:"+id, cooldown,
-				fmt.Sprintf("Container %s CPU %.1f%% exceeds threshold %.1f%%", id[:12], raw.CPUPercent, svc.CPUThreshold),
+				fmt.Sprintf("Container %s CPU %.1f%% exceeds threshold %.1f%%", id[:12], cpuPct, svc.CPUThreshold),
 			) {
 				m.metrics.IncCPUAlerts(svc.Name)
 			}
