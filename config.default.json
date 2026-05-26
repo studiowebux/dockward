@@ -1,0 +1,28 @@
+{
+  "runtime": "docker",
+  "registry": {
+    "url": "http://localhost:5000",
+    "poll_interval": 300,
+    "insecure": false
+  },
+  "api": {
+    "address": ["127.0.0.1:9090"]
+  },
+  "monitor": {
+    "stats_interval": 30
+  },
+  "docker_health": {
+    "check_interval": 30,
+    "timeout": 5
+  },
+  "audit": {
+    "path": ""
+  },
+  "push": {
+    "warden_url": "",
+    "token": "",
+    "machine_id": ""
+  },
+  "notifications": {},
+  "services": []
+}

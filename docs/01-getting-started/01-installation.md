@@ -33,11 +33,6 @@ Install the binary and service unit:
 
 ```sh
 sudo install -m 755 dockward /usr/local/bin/dockward
-sudo mkdir -p /etc/dockward
-
-# Download config sample and service unit from the repo
-curl -Lo /etc/dockward/config.json \
-  https://raw.githubusercontent.com/studiowebux/dockward/main/config.sample.json
 sudo curl -Lo /etc/systemd/system/dockward.service \
   https://raw.githubusercontent.com/studiowebux/dockward/main/dockward.service
 
@@ -45,7 +40,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dockward
 ```
 
-Edit `/etc/dockward/config.json` before starting the service. See [Configuration](02-configuration.md) for a walkthrough and [Config Reference](../02-reference/01-config.md) for all fields.
+No config file needed — dockward creates a default at `/etc/dockward/config.json` on first start and waits for services to be added. Run `dockward init` to add services interactively, or edit the file directly. See [Configuration](02-configuration.md) for a walkthrough and [Config Reference](../02-reference/01-config.md) for all fields.
 
 ## From Source
 
@@ -66,8 +61,6 @@ Install on host:
 
 ```sh
 sudo install -m 755 dockward-linux-amd64 /usr/local/bin/dockward
-sudo mkdir -p /etc/dockward
-sudo cp config.sample.json /etc/dockward/config.json
 sudo cp dockward.service /etc/systemd/system/dockward.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now dockward

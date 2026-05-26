@@ -84,6 +84,9 @@ func main() {
 		logger.Fatalf("failed to load config: %v", err)
 	}
 	logger.Printf("loaded config: %d services, poll interval %ds", len(cfg.Services), cfg.Registry.PollInterval)
+	if len(cfg.Services) == 0 {
+		logger.Printf("no services configured — run 'dockward init' to add services or edit %s", *configPath)
+	}
 
 	// Build notifiers.
 	dispatcher := buildDispatcher(cfg)

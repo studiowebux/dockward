@@ -152,11 +152,54 @@ func (c *Config) RLock() { c.mu.RLock() }
 // RUnlock releases the read lock.
 func (c *Config) RUnlock() { c.mu.RUnlock() }
 
+// defaultConfig is the zero-edit starting point written when no config file exists.
+var defaultConfig = []byte(`{
+  "runtime": "docker",
+  "registry": {
+    "url": "http://localhost:5000",
+    "poll_interval": 300,
+    "insecure": false
+  },
+  "api": {
+    "address": ["127.0.0.1:9090"]
+  },
+  "monitor": {
+    "stats_interval": 30
+  },
+  "docker_health": {
+    "check_interval": 30,
+    "timeout": 5
+  },
+  "audit": {
+    "path": ""
+  },
+  "push": {
+    "warden_url": "",
+    "token": "",
+    "machine_id": ""
+  },
+  "notifications": {},
+  "services": []
+}
+`)
+
 // Load reads and parses a JSON config file.
+// If the file does not exist, a default config is written to path and loaded.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path from CLI flag, not network input
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read config: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			return nil, fmt.Errorf("create config directory: %w", err)
+		}
+		if err := os.WriteFile(path, defaultConfig, 0600); err != nil { // #nosec G306 -- config file, 0600 is intentional
+			return nil, fmt.Errorf("write default config: %w", err)
+		}
+		logger.Printf("[config] no config found — created default at %s", path)
+		logger.Printf("[config] run 'dockward init' to add services, or edit %s directly", path)
+		data = defaultConfig
 	}
 
 	cfg := &Config{}
